@@ -1,12 +1,10 @@
+# Modified by Stegra AB for the Stegra-maintained distribution.
 name: Semgrep
 
 on:
-  pull_request: {}
+  # Keep this manual until the Stegra repository has its own Semgrep token and
+  # security-scanning configuration.
   workflow_dispatch: {}
-  push:
-    branches: ["master", "main"]
-  schedule:
-    - cron: '20 5 * * *'
 
 jobs:
   semgrep:
