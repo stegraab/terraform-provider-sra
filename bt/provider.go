@@ -1,3 +1,5 @@
+// Modified by Stegra AB for the Stegra-maintained distribution.
+// SPDX-License-Identifier: Apache-2.0
 package bt
 
 import (
@@ -41,13 +43,15 @@ func (p *sraProvider) Metadata(_ context.Context, _ provider.MetadataRequest, re
 func (p *sraProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		MarkdownDescription: `
-# BeyondTrust SRA Terraform Provider
+# Stegra SRA Terraform Provider
 
-The [BeyondTrust SRA Provider](https://registry.terraform.io/providers/beyondtrust/sra/latest/docs) allows [Terraform](https://terraform.io) to manage access to resources in the [Secure Remote Access (SRA)](https://www.beyondtrust.com/secure-remote-access) products from BeyondTrust.  This module can be used with either the Remote Support and Privileged Remote Access products to interact with the Configuration API using appropriately configured API credentials.
+The [Stegra SRA Provider](https://registry.terraform.io/providers/stegraab/sra/latest/docs) is a community-maintained derivative of the [BeyondTrust SRA provider](https://github.com/BeyondTrust/terraform-provider-sra). It allows [Terraform](https://terraform.io) to manage access to resources in BeyondTrust [Secure Remote Access (SRA)](https://www.beyondtrust.com/secure-remote-access) products. It can be used with Remote Support or Privileged Remote Access to interact with the Configuration API using appropriately configured API credentials.
+
+This provider is maintained and supported by Stegra AB. It is not affiliated with, endorsed by, or supported by BeyondTrust Corporation.
 
 See the SRA Provider documentation as well as the Configuration API documentation in your instance for more information on supported API endpoints and parameters.
 
-This provider requires Remote Support or Privileged Remote Access version 23.2.1+. Using this provider with prior versions is not supported by BeyondTrust and could result in Terraform reporting errors.
+The upstream provider requires Remote Support or Privileged Remote Access version 23.2.1+. Earlier appliance versions may cause Terraform errors. Managed group policy behavior also depends on the Configuration API exposed by the appliance; see the repository compatibility notes.
 
 ## Use Cases
 
@@ -61,7 +65,7 @@ As examples, this provider allows:
 * Enabling Jump Group creation, deletion, and asset membership to leverage existing SRA access controls.
 * Enabling Group Policy associations to Jump Groups, Vault Accounts, Vault Account Groups to control overall user access to all Terraform assets.
 
-Examples for all of these use cases can be found within the [test-tf-files](https://github.com/BeyondTrust/terraform-provider-sra/tree/main/test-tf-files) section of our Github repo.
+Examples for these use cases can be found in the [test-tf-files](https://github.com/stegraab/terraform-provider-sra/tree/main/test-tf-files) directory.
 
 ## Configuration
 

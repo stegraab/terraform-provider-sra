@@ -1,3 +1,4 @@
+# Modified by Stegra AB for the Stegra-maintained distribution.
 name: Deploy generated docs to Github Pages
 
 on:
@@ -34,10 +35,9 @@ jobs:
           cat > ./docs/_config.yml << EOF
           title: SRA Terraform Provider
           author:
-            name: BeyondTrust
-            email: support@beyondtrust.com
+            name: Stegra AB
           description: >
-            Generated documentation for the SRA Terraform provider.
+            Generated documentation for the Stegra-maintained SRA Terraform provider.
           theme: minima
           plugins: []
 

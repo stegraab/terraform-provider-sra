@@ -1,3 +1,5 @@
+// Modified by Stegra AB for the Stegra-maintained distribution.
+// SPDX-License-Identifier: Apache-2.0
 package api
 
 import (

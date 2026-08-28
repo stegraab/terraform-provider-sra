@@ -7,6 +7,8 @@ description: |-
   For descriptions of individual fields, please see the Configuration API documentation on your SRA Appliance
 ---
 
+<!-- Modified by Stegra AB for the Stegra-maintained distribution. -->
+
 # sra_group_policy_list (Data Source)
 
 Fetch a list of Group Policies.

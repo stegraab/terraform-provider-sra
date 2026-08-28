@@ -1,3 +1,5 @@
+// Modified by Stegra AB for the Stegra-maintained distribution.
+// SPDX-License-Identifier: Apache-2.0
 package main
 
 import (
@@ -14,7 +16,7 @@ import (
 
 func main() {
 	err := providerserver.Serve(context.Background(), bt.New, providerserver.ServeOpts{
-		Address: "registry.terraform.io/beyondtrust/sra",
+		Address: "registry.terraform.io/stegraab/sra",
 	})
 
 	if err != nil {

@@ -1,3 +1,4 @@
+# Modified by Stegra AB for the Stegra-maintained distribution.
 # Visit https://goreleaser.com for documentation on how to customize this
 # behavior.
 version: 2
@@ -55,7 +56,6 @@ release:
   extra_files:
     - glob: 'terraform-registry-manifest.json'
       name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
-    - glob: 'signkey.asc'
   # If you want to manually examine the release before its live, uncomment this line:
   # draft: true
 changelog:

@@ -7,6 +7,8 @@ description: |-
   On PRA, enabling a Jump permission requires effective endpoint access: perm_access_allowed must be true, and access_perm_status must not be not_defined. The appliance otherwise normalizes enabled Jump permissions back to false.
 ---
 
+<!-- Modified by Stegra AB for the Stegra-maintained distribution. -->
+
 # sra_group_policy (Resource)
 
 Manages a Group Policy for either Privileged Remote Access (PRA) or Remote Support (RS). Product-specific attributes must only be configured for the matching appliance type.

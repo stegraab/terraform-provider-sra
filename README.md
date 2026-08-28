@@ -1,45 +1,103 @@
-<a href="https://www.beyondtrust.com">
-    <img src=".github/beyondtrust_logo.svg" alt="BeyondTrust" title="BeyondTrust" align="right" height="50">
-</a>
+<!-- Modified by Stegra AB for the Stegra-maintained distribution. -->
 
-# BeyondTrust SRA Terraform Provider
+# Stegra SRA Terraform Provider
 
-The [BeyondTrust SRA Provider](https://registry.terraform.io/providers/beyondtrust/sra/latest/docs) allows [Terraform](https://terraform.io) to manage access to resources in the [Secure Remote Access (SRA)](https://www.beyondtrust.com/secure-remote-access) products from BeyondTrust.  This module can be used with either the Remote Support or Privileged Remote Access products to interact with the Configuration API using appropriately configured API credentials.
+The Stegra SRA Provider allows [Terraform](https://terraform.io) to manage
+resources in BeyondTrust [Secure Remote
+Access](https://www.beyondtrust.com/secure-remote-access) products through the
+Configuration API. It supports Remote Support and Privileged Remote Access,
+subject to the API capabilities exposed by the appliance.
 
-See the SRA Provider documentation as well as the Configuration API documentation in your instance for more information on supported API endpoints and parameters.
+This is a Stegra-maintained derivative of the
+[BeyondTrust SRA Terraform Provider](https://github.com/BeyondTrust/terraform-provider-sra).
+It is not affiliated with, endorsed by, or supported by BeyondTrust
+Corporation. Issues with this distribution should be reported in the
+[Stegra repository](https://github.com/stegraab/terraform-provider-sra/issues),
+not to BeyondTrust Support.
 
-This provider requires Remote Support or Privileged Remote Access version 23.2.1+. Using this provider with prior versions is not supported by BeyondTrust and could result in Terraform reporting errors.
+## Why this distribution exists
 
-## Use Cases
+Stegra maintains this provider so required infrastructure capabilities can be
+released on a predictable schedule while useful changes continue to be offered
+upstream. The initial Stegra release adds managed Group Policy and Group Policy
+Member resources while preserving the upstream provider's resources and data
+sources.
 
-The chief use case for this provider is to manage access to all assets managed within your Terraform instance in conjection with BeyondTrust Remote Support or BeyondTrust Priviliged Remote Access products.
+The upstream base and Stegra patch history are recorded in
+[UPSTREAM.md](UPSTREAM.md).
 
-As examples, this provider allows:
-* Enabling Jump Item creation and deletion to match the provisioning and deprovisioning of assets within Terraform.
-* Enabling Vault credential creation and deletion to match the credentials used within the assets within Terraform.
-* Enabling Vault credential associations to Jump Items to enable passwordless authentication to assets.
-* Enabling Vault credential policy management to control how credentials are handled and used.
-* Enabling Jump Group creation, deletion, and asset membership to leverage existing SRA access controls.
-* Enabling Group Policy associations to Jump Groups, Vault Accounts, Vault Account Groups to control overall user access to all Terraform assets.
+## Usage
 
-Examples for all of these use cases can be found within the [test-tf-files](https://github.com/BeyondTrust/terraform-provider-sra/tree/main/test-tf-files) section of our Github repo.
+```terraform
+terraform {
+  required_providers {
+    sra = {
+      source  = "stegraab/sra"
+      version = "~> 1.4"
+    }
+  }
+}
 
-## Configuration
+provider "sra" {}
+```
 
-To function, the provider requires the hostname of your instance as well as credentials for an API account configured in that instance. This API account must have permission to "Allow Access" to the Configuration API. If you also plan to access or manage Vault accounts with Terraform, then the API account also needs the "Manage Vault Accounts" permission.
+The provider reads API connection settings from these environment variables:
 
-To use the API Account within your Terraform scripts, the hostname, Client ID, and Client Secret values should be passed by setting the environment "BT_API_HOST", "BT_CLIENT_ID", and "BT_CLIENT_SECRET" environment variables which are the same environment settings used by the btapi CLI tool.  While not recommended, it is also possible to set the values within the script itself with the following block.
+- `BT_API_HOST`
+- `BT_CLIENT_ID`
+- `BT_CLIENT_SECRET`
+
+They may also be configured explicitly:
 
 ```terraform
 provider "sra" {
-  host          = "<The SRA instance hostname, such as mycompanyname.beyondtrustcloud.com>"
-  client_id     = "<The SRA API Account OAuth Client ID>"
-  client_secret = "<The SRA API Account Client Secret>"
+  host          = "example.beyondtrustcloud.com"
+  client_id     = var.bt_client_id
+  client_secret = var.bt_client_secret
 }
 ```
 
+The API account requires **Allow Access** permission for the Configuration API.
+Vault resources additionally require **Manage Vault Accounts** permission.
 
+## Compatibility
 
-## Getting Help
+The upstream provider requires Remote Support or Privileged Remote Access
+23.2.1 or later. Earlier appliance versions may return unsupported fields or
+errors.
 
-For assistance or to report any issues, please contact [BeyondTrust Technical Support](https://www.beyondtrust.com/docs/index.htm#support)
+Managed Group Policy support is based on the bundled PRA OpenAPI v1.10
+contract. Live PRA validation has covered import, no-change planning, create,
+update, and delete. Remote Support uses the shared Group Policy model but has
+not received equivalent live acceptance coverage in this distribution.
+
+Some appliance versions return fields that are absent from the bundled OpenAPI
+schema. For example, one validated PRA appliance returned
+`perm_edit_group_policy_memberships`. Unknown response fields are ignored by
+the client, but new fields cannot be configured until they are represented in
+the bundled schema and provider model.
+
+The Group Policy resource rejects enabled Jump permissions when
+`perm_access_allowed` is explicitly `false`, matching PRA normalization and
+preventing inconsistent post-apply state.
+
+## Development
+
+```shell
+make generate
+make unittest
+```
+
+The tests under `./test` are live end-to-end tests. They create and destroy
+appliance resources and must only be run manually against an approved,
+non-production appliance.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and upstream-sync
+guidance.
+
+## License and attribution
+
+This distribution is licensed under the Apache License 2.0. See
+[LICENSE.md](LICENSE.md) and [NOTICE](NOTICE). Modified files and Stegra
+additions are identified by Git history and the provenance recorded in
+[UPSTREAM.md](UPSTREAM.md).

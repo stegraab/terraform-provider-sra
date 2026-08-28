@@ -1,2 +1,4 @@
+# Modified by Stegra AB for the Stegra-maintained distribution.
+# SPDX-License-Identifier: Apache-2.0
 # Group Policy members use a composite <group_policy_id>/<member_id> import ID.
 terraform import sra_group_policy_member.supplier_saml_group 9/77

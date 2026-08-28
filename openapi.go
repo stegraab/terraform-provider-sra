@@ -1,5 +1,8 @@
 //go:build ignore
 
+// Modified by Stegra AB for the Stegra-maintained distribution.
+// SPDX-License-Identifier: Apache-2.0
+
 // This file reads the openapi.yaml files for the SRA config APIs and appends
 // the specific field documentation to the terraform generated document
 // files. It expects the openapi.yaml files to be in the ./openapi
@@ -25,6 +28,7 @@ func main() {
 	log.SetOutput(os.Stderr)
 	log.Println("Starting doc generation")
 	ParseOpenAPI()
+	markModifiedDocs()
 }
 
 // The list of files that we will append documentation to. This is a map of
@@ -64,6 +68,15 @@ var typeMap = map[string]string{
 	"docs/resources/vault_token_account.md":             "VaultTokenAccount",
 	"docs/resources/web_jump.md":                        "WebJumpItem",
 }
+
+var modifiedDocPaths = []string{
+	"docs/data-sources/group_policy_list.md",
+	"docs/index.md",
+	"docs/resources/group_policy.md",
+	"docs/resources/group_policy_member.md",
+}
+
+const modifiedDocNotice = "<!-- Modified by Stegra AB for the Stegra-maintained distribution. -->"
 
 // Regex matching the generated attribute lines: - `attribute` (Type)
 var propertyName = regexp.MustCompile("^- `([a-z_]+)` (\\([A-Z][a-z]+\\))")
@@ -180,6 +193,35 @@ func ParseOpenAPI() {
 	if err != nil {
 		log.Fatal(err)
 		panic(err)
+	}
+}
+
+func markModifiedDocs() {
+	for _, path := range modifiedDocPaths {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			panic(err)
+		}
+
+		if strings.Contains(string(content), modifiedDocNotice) {
+			continue
+		}
+
+		frontMatterEnd := strings.Index(string(content), "\n---\n")
+		if frontMatterEnd < 0 {
+			panic(fmt.Errorf("generated documentation %s has no YAML front matter", path))
+		}
+
+		insertAt := frontMatterEnd + len("\n---\n")
+		updated := string(content[:insertAt]) + "\n" + modifiedDocNotice + "\n" + string(content[insertAt:])
+
+		info, err := os.Stat(path)
+		if err != nil {
+			panic(err)
+		}
+		if err := os.WriteFile(path, []byte(updated), info.Mode()); err != nil {
+			panic(err)
+		}
 	}
 }
 

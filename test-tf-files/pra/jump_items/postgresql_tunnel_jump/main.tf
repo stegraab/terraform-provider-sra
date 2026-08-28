@@ -1,9 +1,11 @@
+# Modified by Stegra AB for the Stegra-maintained distribution.
+# SPDX-License-Identifier: Apache-2.0
 terraform {
   required_version = ">= 1.0.0"
 
   required_providers {
     sra = {
-      source = "beyondtrust/sra"
+      source = "stegraab/sra"
     }
   }
 }

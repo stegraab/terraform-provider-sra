@@ -1,0 +1,16 @@
+Stegra SRA Terraform Provider
+
+This distribution is derived from the BeyondTrust SRA Terraform Provider:
+https://github.com/BeyondTrust/terraform-provider-sra
+
+The upstream work and this distribution are licensed under the Apache License,
+Version 2.0. See LICENSE.md.
+
+The distribution contains modifications and additions by Stegra AB. Git
+history and UPSTREAM.md identify the upstream base and the Stegra-maintained
+changes.
+
+BeyondTrust, Remote Support, Privileged Remote Access, and Secure Remote Access
+are names or marks of BeyondTrust Corporation. Their use here describes the
+origin of the work and compatible products. This distribution is not
+affiliated with, endorsed by, or supported by BeyondTrust Corporation.

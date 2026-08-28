@@ -1,8 +1,9 @@
+# Modified by Stegra AB for the Stegra-maintained distribution.
 style: github
 template: CHANGELOG.tpl.md
 info:
   title: CHANGELOG
-  repository_url: https://github.com/beyondtrust/terraform-provider-sra
+  repository_url: https://github.com/stegraab/terraform-provider-sra
 options:
   commits:
     # filters:

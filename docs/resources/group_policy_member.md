@@ -6,6 +6,8 @@ description: |-
   Manages a user or group membership in a BeyondTrust Group Policy. Memberships are immutable relationships: changing the policy, security provider, or member selector replaces the relationship. Exactly one of user_id, distinguished_name, or group_name must be configured.
 ---
 
+<!-- Modified by Stegra AB for the Stegra-maintained distribution. -->
+
 # sra_group_policy_member (Resource)
 
 Manages a user or group membership in a BeyondTrust Group Policy. Memberships are immutable relationships: changing the policy, security provider, or member selector replaces the relationship. Exactly one of `user_id`, `distinguished_name`, or `group_name` must be configured.
