@@ -48,10 +48,10 @@ compared.
 
 ## Release policy
 
-Releases use Stegra's own stable semantic version sequence and signing key.
-Upstream tags are provenance markers only and must not trigger Stegra releases.
-The release workflow is manual and accepts only an existing stable tag such as
-`v1.4.0`.
+Releases use Stegra's signing key and append `-stegra.N` to the selected
+upstream version, for example `v1.3.0-stegra.1`. `UPSTREAM_VERSION` records the
+base version. The manual release workflow increments `N` and creates the tag;
+unsuffixed upstream tags never trigger Stegra releases.
 
 Live end-to-end tests create and destroy appliance resources. They are manual,
 must use protected GitHub environments, and must never target a production

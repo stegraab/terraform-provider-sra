@@ -33,13 +33,17 @@ terraform {
   required_providers {
     sra = {
       source  = "stegraab/sra"
-      version = "~> 1.4"
+      version = "= 1.3.0-stegra.1"
     }
   }
 }
 
 provider "sra" {}
 ```
+
+Stegra releases follow the upstream version with a `-stegra.N` suffix, for
+example `1.3.0-stegra.1`. Use an exact version constraint because Terraform
+does not select prerelease versions through ordinary range constraints.
 
 The provider reads API connection settings from these environment variables:
 
