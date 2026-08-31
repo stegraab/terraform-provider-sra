@@ -1,3 +1,5 @@
+// Modified by Stegra AB for the Stegra-maintained distribution.
+// SPDX-License-Identifier: Apache-2.0
 package rs
 
 import (
@@ -10,7 +12,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -59,9 +63,15 @@ func (r *vaultTokenAccountResource) Schema(_ context.Context, _ resource.SchemaR
 			},
 			"personal": schema.BoolAttribute{
 				Computed: true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"owner_user_id": schema.Int64Attribute{
 				Computed: true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 			"account_group_id": schema.Int64Attribute{
 				Optional: true,
@@ -77,6 +87,9 @@ func (r *vaultTokenAccountResource) Schema(_ context.Context, _ resource.SchemaR
 			},
 			"last_checkout_timestamp": schema.StringAttribute{
 				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 
 			"jump_item_association": accountJumpItemAssociationSchema(),
