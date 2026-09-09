@@ -411,6 +411,21 @@ func (a GroupPolicyMember) Endpoint() string {
 	return fmt.Sprintf("group-policy/%s/member", *a.GroupPolicyID)
 }
 
+// SecurityProvider represents the common fields returned by the Security
+// Provider list endpoint for both PRA and Remote Support appliances.
+type SecurityProvider struct {
+	ID                 *int   `json:"id,omitempty"`
+	Name               string `json:"name"`
+	Type               string `json:"type"`
+	Enabled            bool   `json:"enabled"`
+	UserAuthentication bool   `json:"user_authentication"`
+	GroupLookup        bool   `json:"group_lookup"`
+}
+
+func (SecurityProvider) Endpoint() string {
+	return "security-provider"
+}
+
 type VaultAccount struct {
 	ID             *int    `json:"id,omitempty"`
 	Type           string  `json:"type"`

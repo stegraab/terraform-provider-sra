@@ -3,6 +3,7 @@
 
 ### Feat
 - 25.2 API support: updated models and resources for new / changed Jump / Tunnel types (PostgreSQL / MySQL / Network / Protocol) and Jump Client Installer adjustments.
+- Add an `sra_security_provider` data source for resolving Security Provider IDs by name.
 
 ### Fix
 - Compatibility fixes for network tunnel and jump client installer resources against 25.2 API changes.

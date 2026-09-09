@@ -26,6 +26,7 @@ func DatasourceList() []func() datasource.DataSource {
 		newProtocolTunnelJumpDataSource,
 		newRemoteRDPDataSource,
 		newRemoteVNCDataSource,
+		newSecurityProviderDataSource,
 		newSessionPolicyDataSource,
 		newShellJumpDataSource,
 		newWebJumpDataSource,

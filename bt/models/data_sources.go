@@ -140,6 +140,15 @@ type GroupPolicyMember struct {
 	UserID             types.Int64  `tfsdk:"user_id"`
 }
 
+type SecurityProvider struct {
+	ID                 types.Int64  `tfsdk:"id"`
+	Name               types.String `tfsdk:"name"`
+	Type               types.String `tfsdk:"type"`
+	Enabled            types.Bool   `tfsdk:"enabled"`
+	UserAuthentication types.Bool   `tfsdk:"user_authentication"`
+	GroupLookup        types.Bool   `tfsdk:"group_lookup"`
+}
+
 type JumpPolicy struct {
 	ID               types.String `tfsdk:"id"`
 	DisplayName      types.String `tfsdk:"display_name"`
