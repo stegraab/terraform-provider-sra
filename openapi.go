@@ -43,6 +43,7 @@ var typeMap = map[string]string{
 	"docs/data-sources/protocol_tunnel_jump_list.md":     "ProtocolTunnelJumpItem",
 	"docs/data-sources/remote_rdp_list.md":               "RemoteRdpJumpItem",
 	"docs/data-sources/remote_vnc_list.md":               "RemoteVncJumpItem",
+	"docs/data-sources/security_provider.md":             "SecurityProvider",
 	"docs/data-sources/session_policy_list.md":           "SessionPolicy",
 	"docs/data-sources/shell_jump_list.md":               "ShellJumpItem",
 	"docs/data-sources/single_vault_ssh_account_list.md": "VaultSSHAccount",
@@ -71,6 +72,7 @@ var typeMap = map[string]string{
 
 var modifiedDocPaths = []string{
 	"docs/data-sources/group_policy_list.md",
+	"docs/data-sources/security_provider.md",
 	"docs/index.md",
 	"docs/resources/group_policy.md",
 	"docs/resources/group_policy_member.md",
