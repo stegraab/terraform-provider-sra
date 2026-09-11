@@ -1,9 +1,14 @@
 # Create and manage a new Username/Password account in Vault
 
+ephemeral "aws_ssm_parameter" "account_password" {
+  arn = "arn:aws:ssm:eu-north-1:123456789012:parameter/example/account-password"
+}
+
 resource "sra_vault_username_password_account" "new_account" {
-  name     = "Test User/Pass Account"
-  username = "test"
-  password = "this-is-a-test-password-that-should-be-generated-somehow"
+  name                = "Test User/Pass Account"
+  username            = "test"
+  password_wo         = ephemeral.aws_ssm_parameter.account_password.value
+  password_wo_version = 1
 
   # Omit the following configuration to use account group settings
   group_policy_memberships = [
