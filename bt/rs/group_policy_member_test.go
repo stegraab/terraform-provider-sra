@@ -1,10 +1,9 @@
-// Modified by Stegra AB for the Stegra-maintained distribution.
-// SPDX-License-Identifier: Apache-2.0
 package rs
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +11,7 @@ import (
 	"testing"
 
 	"terraform-provider-sra/api"
+	"terraform-provider-sra/api/apimock"
 	"terraform-provider-sra/bt/models"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -145,7 +145,6 @@ func TestGroupPolicyMemberResourceCRUDWithEmptyCreateResponse(t *testing.T) {
 	assert.False(t, created)
 	assert.Equal(t, 2, provisionCount)
 	assert.Equal(t, []string{
-		"GET /api/config/v1/group-policy/9/member",
 		"POST /api/config/v1/group-policy/9/member",
 		"GET /api/config/v1/group-policy/9/member",
 		"POST /api/config/v1/group-policy/9/provision",
@@ -188,16 +187,117 @@ func TestGroupPolicyMemberImportRejectsInvalidIDs(t *testing.T) {
 	}
 }
 
-func TestSetGroupPolicyMemberSelectorFromAPIPrefersStableUserID(t *testing.T) {
+func TestSetGroupPolicyMemberSelectorFromAPIPrefersLDAPDistinguishedName(t *testing.T) {
 	userID := 42
 	dn := "CN=Supplier,OU=Users,DC=example,DC=com"
 	state := models.GroupPolicyMember{}
 
 	ok := setGroupPolicyMemberSelectorFromAPI(&state, api.GroupPolicyMember{UserID: &userID, DistinguishedName: &dn})
 	require.True(t, ok)
-	assert.Equal(t, int64(42), state.UserID.ValueInt64())
-	assert.True(t, state.DistinguishedName.IsNull())
+	assert.True(t, state.UserID.IsNull())
+	assert.Equal(t, dn, state.DistinguishedName.ValueString())
 	assert.True(t, state.GroupName.IsNull())
+}
+
+func TestGroupPolicyMemberCreateFailureKeepsAcceptedMembership(t *testing.T) {
+	for _, failure := range []string{"discovery", "provision"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx := context.Background()
+			fail := true
+			postCount := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case req.URL.Path == "/oauth2/token":
+					_, _ = w.Write([]byte(`{"token_type":"Bearer","expires_in":3600,"access_token":"test-token"}`))
+				case req.Method == http.MethodPost && req.URL.Path == "/api/config/v1/group-policy/9/member":
+					postCount++
+					w.WriteHeader(http.StatusCreated)
+				case req.Method == http.MethodGet && req.URL.Path == "/api/config/v1/group-policy/9/member":
+					if fail && failure == "discovery" {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					_, _ = w.Write([]byte(`[{"id":77,"security_provider_id":5,"group_name":"Suppliers"}]`))
+				case req.Method == http.MethodPost && req.URL.Path == "/api/config/v1/group-policy/9/provision":
+					w.WriteHeader(http.StatusInternalServerError)
+				case req.Method == http.MethodGet && req.URL.Path == "/api/config/v1/group-policy/9/member/77":
+					_, _ = w.Write([]byte(`{"id":77,"security_provider_id":5,"group_name":"Suppliers"}`))
+				default:
+					t.Errorf("unexpected request: %s %s", req.Method, req.URL.Path)
+					w.WriteHeader(http.StatusMethodNotAllowed)
+				}
+			}))
+			t.Cleanup(server.Close)
+			clientID, secret := "id", "secret"
+			client, err := api.NewClient(server.URL, &clientID, &secret)
+			require.NoError(t, err)
+			managed := &groupPolicyMemberResource{}
+			managed.ApiClient = client
+			sch := groupPolicyMemberTestSchema(t, managed)
+			plan := groupPolicyMemberTestPlan(t, sch, models.GroupPolicyMember{ID: types.StringUnknown(), GroupPolicyID: types.StringValue("9"), SecurityProviderID: types.Int64Value(5), GroupName: types.StringValue("Suppliers")})
+			resp := resource.CreateResponse{State: tfsdk.State{Schema: sch}}
+			managed.Create(ctx, resource.CreateRequest{Plan: plan}, &resp)
+			require.True(t, resp.Diagnostics.HasError())
+			require.False(t, resp.State.Raw.IsNull())
+			var state models.GroupPolicyMember
+			require.False(t, resp.State.Get(ctx, &state).HasError())
+			if failure == "discovery" {
+				assert.True(t, state.ID.IsNull())
+			} else {
+				assert.Equal(t, "77", state.ID.ValueString())
+			}
+			fail = false
+			read := resource.ReadResponse{State: resp.State}
+			managed.Read(ctx, resource.ReadRequest{State: resp.State}, &read)
+			require.False(t, read.Diagnostics.HasError(), "%v", read.Diagnostics)
+			require.False(t, read.State.Get(ctx, &state).HasError())
+			assert.Equal(t, "77", state.ID.ValueString())
+			assert.Equal(t, 1, postCount, "refresh must not recreate an accepted grant")
+		})
+	}
+}
+
+func TestGroupPolicyMemberReadPreservesConfiguredSelectorAndImportsLDAP(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if req.URL.Path == "/oauth2/token" {
+			_, _ = w.Write([]byte(`{"token_type":"Bearer","expires_in":3600,"access_token":"test-token"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":77,"security_provider_id":5,"user_id":42,"distinguished_name":"CN=Supplier,OU=Users,DC=example,DC=com"}`))
+	}))
+	defer server.Close()
+	clientID, secret := "id", "secret"
+	client, err := api.NewClient(server.URL, &clientID, &secret)
+	require.NoError(t, err)
+	for _, selector := range []string{"import", "user_id", "distinguished_name"} {
+		t.Run(selector, func(t *testing.T) {
+			managed := &groupPolicyMemberResource{}
+			managed.ApiClient = client
+			sch := groupPolicyMemberTestSchema(t, managed)
+			model := models.GroupPolicyMember{ID: types.StringValue("77"), GroupPolicyID: types.StringValue("9")}
+			switch selector {
+			case "user_id":
+				model.UserID = types.Int64Value(42)
+			case "distinguished_name":
+				model.DistinguishedName = types.StringValue("CN=Supplier,OU=Users,DC=example,DC=com")
+			}
+			plan := groupPolicyMemberTestPlan(t, sch, model)
+			state := tfsdk.State{Schema: sch, Raw: plan.Raw}
+			resp := resource.ReadResponse{State: state}
+			managed.Read(context.Background(), resource.ReadRequest{State: state}, &resp)
+			require.False(t, resp.Diagnostics.HasError(), "%v", resp.Diagnostics)
+			require.False(t, resp.State.Get(context.Background(), &model).HasError())
+			if selector == "user_id" {
+				assert.Equal(t, int64(42), model.UserID.ValueInt64())
+				assert.True(t, model.DistinguishedName.IsNull())
+			} else {
+				assert.True(t, model.UserID.IsNull())
+				assert.Equal(t, "CN=Supplier,OU=Users,DC=example,DC=com", model.DistinguishedName.ValueString())
+			}
+		})
+	}
 }
 
 func groupPolicyMemberTestSchema(t *testing.T, managed *groupPolicyMemberResource) schema.Schema {
@@ -217,4 +317,22 @@ func groupPolicyMemberTestPlan(t *testing.T, sch schema.Schema, model models.Gro
 	raw, err := object.ToTerraformValue(ctx)
 	require.NoError(t, err)
 	return tfsdk.Plan{Schema: sch, Raw: raw}
+}
+
+// The member list pages at 100, and a new member's ID is found by listing the
+// policy after the create, so a member past the first page must still be found.
+func TestDiscoverGroupPolicyMemberIDReadsEveryPage(t *testing.T) {
+	srv := apimock.New()
+	defer srv.Close()
+	rows := make([]apimock.Row, 150)
+	for i := range rows {
+		rows[i] = apimock.Row{"id": i + 1, "security_provider_id": 5, "group_name": fmt.Sprint("g", i+1)}
+	}
+	srv.Rows("group-policy/9/member", rows...)
+
+	policyID, name := "9", "g120"
+	id, err := discoverCreatedGroupPolicyMemberID(apimockClient(srv), api.GroupPolicyMember{GroupPolicyID: &policyID, SecurityProviderID: 5, GroupName: &name})
+	require.NoError(t, err)
+	assert.Equal(t, 120, id)
+	assert.Equal(t, 2, srv.Calls(http.MethodGet, "group-policy/9/member"), "the listing must read both pages")
 }

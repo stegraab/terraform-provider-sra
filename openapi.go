@@ -71,11 +71,8 @@ var typeMap = map[string]string{
 }
 
 var modifiedDocPaths = []string{
-	"docs/data-sources/group_policy_list.md",
 	"docs/data-sources/security_provider.md",
 	"docs/index.md",
-	"docs/resources/group_policy.md",
-	"docs/resources/group_policy_member.md",
 }
 
 const modifiedDocNotice = "<!-- Modified by Stegra AB for the Stegra-maintained distribution. -->"

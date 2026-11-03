@@ -105,6 +105,7 @@ func (r *jumpointResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 						"group_policy_id": schema.StringAttribute{
 							Required:    true,
 							Description: "The ID of the Group Policy this Jumpoint is a member of",
+							Validators:  groupPolicyIDValidators(),
 						},
 					},
 				},
@@ -117,6 +118,9 @@ func (r *jumpointResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	tflog.Debug(ctx, "Starting plan modification")
 	if req.Plan.Raw.IsNull() {
 		tflog.Debug(ctx, "No plan to modify")
+		return
+	}
+	if r.ApiClient == nil {
 		return
 	}
 	var plan models.Jumpoint
@@ -155,12 +159,7 @@ func (r *jumpointResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	CreateGPMemberships[api.GroupPolicyJumpoint](ctx, r.ApiClient, req.Plan, &resp.State, &resp.Diagnostics, id,
-		func(m *api.GroupPolicyJumpoint, entityID int) { m.JumpointID = &entityID },
-		func(m *api.GroupPolicyJumpoint) *string { return m.GroupPolicyID },
-		func(m *api.GroupPolicyJumpoint, gpID *string) { m.GroupPolicyID = gpID },
-		&jpMembershipMutex,
-	)
+	CreateGPMemberships[api.GroupPolicyJumpoint](ctx, r.ApiClient, req.Plan, &resp.State, &resp.Diagnostics, id, &jpMembershipMutex)
 }
 
 func (r *jumpointResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -179,10 +178,13 @@ func (r *jumpointResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	ReadGPMemberships[api.GroupPolicyJumpoint](ctx, r.ApiClient, req.State, &resp.State, &resp.Diagnostics, id,
-		func(m *api.GroupPolicyJumpoint) *string { return m.GroupPolicyID },
-		func(m *api.GroupPolicyJumpoint, gpID *string) { m.GroupPolicyID = gpID },
-	)
+	ReadGPMemberships[api.GroupPolicyJumpoint](ctx, r.ApiClient, req.State, &resp.State, &resp.Diagnostics, id)
+}
+
+// ImportState also reads the object's group policy memberships, which Read
+// refreshes only once they are in state.
+func (r *jumpointResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	importWithGPMemberships(ctx, &r.apiResource, &jumpointMemberIndex, req, resp)
 }
 
 func (r *jumpointResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -199,9 +201,6 @@ func (r *jumpointResource) Update(ctx context.Context, req resource.UpdateReques
 	}
 
 	UpdateGPMemberships[api.GroupPolicyJumpoint](ctx, r.ApiClient, req.Plan, req.State, &resp.State, &resp.Diagnostics, id,
-		func(m *api.GroupPolicyJumpoint, entityID int) { m.JumpointID = &entityID },
-		func(m *api.GroupPolicyJumpoint) *string { return m.GroupPolicyID },
-		func(m *api.GroupPolicyJumpoint, gpID *string) { m.GroupPolicyID = gpID },
 		api.DiffGPJumpointLists,
 		&jpMembershipMutex,
 	)

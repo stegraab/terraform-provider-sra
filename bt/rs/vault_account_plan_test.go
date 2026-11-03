@@ -4,10 +4,7 @@ package rs
 
 import (
 	"context"
-	"reflect"
 	"testing"
-
-	"terraform-provider-sra/bt/models"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -30,7 +27,7 @@ func TestVaultAccountComputedValuesUseStateForUnknown(t *testing.T) {
 		{
 			name:     "ssh",
 			resource: &vaultSSHAccountResource{},
-			strings:  []string{"public_key", "private_key_public_cert", "last_checkout_timestamp"},
+			strings:  []string{"public_key", "last_checkout_timestamp"},
 			bools:    []string{"personal"},
 			int64s:   []string{"owner_user_id"},
 		},
@@ -70,66 +67,6 @@ func TestVaultAccountComputedValuesUseStateForUnknown(t *testing.T) {
 				assertInt64StatePreserved(t, resp.Schema, name)
 			}
 		})
-	}
-}
-
-func TestVaultUsernamePasswordAccountWriteOnlyPasswordSchema(t *testing.T) {
-	t.Parallel()
-
-	managed := &vaultUsernamePasswordAccountResource{}
-	var resp resource.SchemaResponse
-	managed.Schema(context.Background(), resource.SchemaRequest{}, &resp)
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("schema returned diagnostics: %v", resp.Diagnostics)
-	}
-
-	password := resp.Schema.Attributes["password"].(schema.StringAttribute)
-	if !password.Optional || password.Required {
-		t.Fatal("legacy password must remain optional for backwards compatibility")
-	}
-
-	passwordWO := resp.Schema.Attributes["password_wo"].(schema.StringAttribute)
-	if !passwordWO.Optional || !passwordWO.Sensitive || !passwordWO.WriteOnly {
-		t.Fatal("password_wo must be optional, sensitive, and write-only")
-	}
-
-	if got := len(managed.ConfigValidators(context.Background())); got != 3 {
-		t.Fatalf("expected three password configuration validators, got %d", got)
-	}
-
-	modelType := reflect.TypeOf(models.VaultUsernamePasswordAccount{})
-	modelAttributes := make(map[string]struct{}, modelType.NumField())
-	for index := 0; index < modelType.NumField(); index++ {
-		modelAttributes[modelType.Field(index).Tag.Get("tfsdk")] = struct{}{}
-	}
-	for _, attribute := range []string{"password", "password_wo", "password_wo_version"} {
-		if _, ok := modelAttributes[attribute]; !ok {
-			t.Fatalf("Terraform model does not contain %s", attribute)
-		}
-	}
-}
-
-func TestAccountJumpItemAssociationUsesStateForUnknown(t *testing.T) {
-	t.Parallel()
-
-	association := accountJumpItemAssociationSchema()
-	if len(association.PlanModifiers) != 1 {
-		t.Fatalf("expected one jump_item_association plan modifier, got %d", len(association.PlanModifiers))
-	}
-
-	attributeTypes := association.GetType().(types.ObjectType).AttrTypes
-	stateValue := types.ObjectNull(attributeTypes)
-	request := planmodifier.ObjectRequest{
-		ConfigValue: types.ObjectNull(attributeTypes),
-		PlanValue:   types.ObjectUnknown(attributeTypes),
-		State:       existingResourceState(),
-		StateValue:  stateValue,
-	}
-	response := planmodifier.ObjectResponse{PlanValue: request.PlanValue}
-	association.PlanModifiers[0].PlanModifyObject(context.Background(), request, &response)
-
-	if !response.PlanValue.Equal(stateValue) {
-		t.Fatalf("jump_item_association plan value was not preserved: %s", response.PlanValue)
 	}
 }
 

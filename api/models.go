@@ -5,6 +5,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 )
 
 // Models should be named like ResourceName. This name is mapped to snake_case for the
@@ -152,6 +153,58 @@ type MySQLTunnelJump struct {
 func (MySQLTunnelJump) Endpoint() string { return "jump-item/mysql-tunnel-jump" }
 func (MySQLTunnelJump) AllowPRA() bool   { return true }
 func (MySQLTunnelJump) AllowRS() bool    { return false }
+
+// MongodbTunnelJump is named "Mongodb", not "MongoDB", because the published
+// resource name is ToSnakeCase of this type name: MongoDB would publish as
+// sra_mongo_db_tunnel_jump, as MySQL already publishes as sra_my_sql_*.
+//
+// Username and Database are plain strings, so "" is sent and clears them.
+// AuthDatabase is a pointer so it is sent only when set; see clearAuthDatabase.
+type MongodbTunnelJump struct {
+	ID                  *int    `json:"id,omitempty"`
+	Name                string  `json:"name"`
+	JumpointID          int     `json:"jumpoint_id"`
+	Hostname            string  `json:"hostname"`
+	JumpGroupID         int     `json:"jump_group_id"`
+	JumpGroupType       string  `json:"jump_group_type"`
+	Tag                 string  `json:"tag"`
+	Comments            string  `json:"comments"`
+	JumpPolicyID        *int    `json:"jump_policy_id,omitempty"`
+	SessionPolicyID     *int    `json:"session_policy_id,omitempty"`
+	TunnelListenAddress *string `json:"local_address,omitempty"`
+	Username            string  `json:"username"`
+	Database            string  `json:"database"`
+	AuthDatabase        *string `json:"auth_database,omitempty"`
+}
+
+func (MongodbTunnelJump) Endpoint() string { return "jump-item/mongodb-tunnel-jump" }
+func (MongodbTunnelJump) AllowPRA() bool   { return true }
+func (MongodbTunnelJump) AllowRS() bool    { return false }
+
+// OracleTunnelJump keeps the provider's standard Go field names, so the
+// Terraform attributes match every other jump item, while the json tags carry
+// the Oracle endpoint's own names: gateway_id, asset_group_id and
+// asset_group_type. CopyTFtoAPI and CopyAPItoTF match fields by Go name, so the
+// tags alone do the renaming.
+type OracleTunnelJump struct {
+	ID                  *int    `json:"id,omitempty"`
+	Name                string  `json:"name"`
+	JumpointID          int     `json:"gateway_id"`
+	Hostname            string  `json:"hostname"`
+	JumpGroupID         int     `json:"asset_group_id"`
+	JumpGroupType       string  `json:"asset_group_type"`
+	Tag                 string  `json:"tag"`
+	Comments            string  `json:"comments"`
+	JumpPolicyID        *int    `json:"jump_policy_id,omitempty"`
+	SessionPolicyID     *int    `json:"session_policy_id,omitempty"`
+	TunnelListenAddress *string `json:"local_address,omitempty"`
+	Username            string  `json:"username"`
+	Database            string  `json:"database"`
+}
+
+func (OracleTunnelJump) Endpoint() string { return "jump-item/oracle-tunnel-jump" }
+func (OracleTunnelJump) AllowPRA() bool   { return true }
+func (OracleTunnelJump) AllowRS() bool    { return false }
 
 type NetworkTunnelJump struct {
 	ID              *int             `json:"id,omitempty"`
@@ -459,6 +512,18 @@ type VaultUsernamePasswordAccount struct {
 	GroupPolicyMemberships []GroupPolicyVaultAccount  `json:"-" sraapi:"skip"`
 }
 
+// UpdateRequestPreparer removes response-only fields before an API update.
+// The values remain available when decoding responses into Terraform state.
+type UpdateRequestPreparer interface {
+	PrepareUpdateRequest()
+}
+
+func (a *VaultUsernamePasswordAccount) PrepareUpdateRequest() {
+	a.Personal = nil
+	a.OwnerUserID = nil
+	a.LastCheckoutTimestamp = nil
+}
+
 func (VaultUsernamePasswordAccount) Endpoint() string {
 	return "vault/account"
 }
@@ -478,7 +543,7 @@ type VaultSSHAccount struct {
 	PrivateKey            *string `json:"private_key,omitempty"`
 	PrivateKeyPassphrase  *string `json:"private_key_passphrase,omitempty"`
 	PrivateKeyPublicCert  *string `json:"private_key_public_cert,omitempty"`
-	LastCheckoutTimestamp *string `json:"last_checkout_timestamp"`
+	LastCheckoutTimestamp *string `json:"last_checkout_timestamp,omitempty"`
 
 	JumpItemAssociation    AccountJumpItemAssociation `json:"-" sraapi:"skip"`
 	GroupPolicyMemberships []GroupPolicyVaultAccount  `json:"-" sraapi:"skip"`
@@ -486,6 +551,12 @@ type VaultSSHAccount struct {
 
 func (VaultSSHAccount) Endpoint() string {
 	return "vault/account"
+}
+
+func (a *VaultSSHAccount) PrepareUpdateRequest() {
+	a.Personal = nil
+	a.OwnerUserID = nil
+	a.LastCheckoutTimestamp = nil
 }
 
 type VaultTokenAccount struct {
@@ -499,7 +570,7 @@ type VaultTokenAccount struct {
 	AccountPolicy  *string `json:"account_policy"`
 
 	Token                 string  `json:"token,omitempty"`
-	LastCheckoutTimestamp *string `json:"last_checkout_timestamp"`
+	LastCheckoutTimestamp *string `json:"last_checkout_timestamp,omitempty"`
 
 	JumpItemAssociation    AccountJumpItemAssociation `json:"-" sraapi:"skip"`
 	GroupPolicyMemberships []GroupPolicyVaultAccount  `json:"-" sraapi:"skip"`
@@ -507,6 +578,12 @@ type VaultTokenAccount struct {
 
 func (VaultTokenAccount) Endpoint() string {
 	return "vault/account"
+}
+
+func (a *VaultTokenAccount) PrepareUpdateRequest() {
+	a.Personal = nil
+	a.OwnerUserID = nil
+	a.LastCheckoutTimestamp = nil
 }
 
 type VaultAccountGroup struct {
@@ -543,10 +620,59 @@ func (VaultAccountPolicy) Endpoint() string {
 // read/write from TF Schema/Plans directly, meaning unknown or null values
 // could panic, depending on the type of the field.
 type AccountJumpItemAssociation struct {
-	ID         *int                         `tfsdk:"-" json:"-"`
-	FilterType string                       `json:"filter_type" tfsdk:"filter_type"`
-	Criteria   *JumpItemAssociationCriteria `json:"criteria" tfsdk:"criteria"`
-	JumpItems  []InjectableJumpItem         `json:"jump_items" tfsdk:"jump_items"`
+	ID         *int   `tfsdk:"-" json:"-"`
+	FilterType string `json:"filter_type" tfsdk:"filter_type"`
+	// omitempty on Criteria, and deliberately NOT on the five sets inside
+	// JumpItemAssociationCriteria. A nil Criteria marshalled to "criteria": null,
+	// which the appliance rejects with 422 "This value must be an array." -- so a
+	// bare filter_type of any_jump_items or no_jump_items could not be created at
+	// all. Omitting the key is accepted (measured); sending null is not.
+	//
+	// The sets must keep marshalling their zero value. omitempty on a slice omits
+	// an EMPTY one as well as a nil one, and the PATCH contract says a supplied
+	// criteria property replaces the previous value while an omitted one preserves
+	// it. So omitempty there would silently turn "clear the tags" into "leave the
+	// tags alone" on a control that decides where a credential may be injected.
+	Criteria  *JumpItemAssociationCriteria `json:"criteria,omitempty" tfsdk:"criteria"`
+	JumpItems []InjectableJumpItem         `json:"jump_items" tfsdk:"jump_items"`
+}
+
+// MarshalJSON sends criteria in the two shapes the appliance reads correctly and
+// never in the third, which it misreads.
+//
+// Measured against a live appliance:
+//   - with the criteria key OMITTED, a PATCH preserves whatever criteria the
+//     association already had;
+//   - with criteria present and all five properties empty, a PATCH CLEARS it, and
+//     the association then reports criteria: null;
+//   - with criteria sent as an explicit null, the request is rejected outright
+//     with 422 "This value must be an array."
+//
+// So omission cannot stand for "the configuration declares no criteria". Under a
+// filter_type of "criteria" that would keep a scope the configuration no longer
+// asks for, and the applied state would disagree with the plan — Terraform
+// reports that as the provider producing an inconsistent result. Omission is
+// reserved for the filter types that ignore criteria altogether, which is the one
+// case where the appliance is happy to receive nothing and unhappy to receive
+// null.
+func (a AccountJumpItemAssociation) MarshalJSON() ([]byte, error) {
+	type wire AccountJumpItemAssociation // sheds this method, so no recursion
+	w := wire(a)
+
+	if w.Criteria == nil && w.FilterType == "criteria" {
+		// Empty arrays rather than &JumpItemAssociationCriteria{}: the five fields
+		// carry no omitempty, so a zero-value struct marshals every one of them as
+		// null, which is the shape the appliance rejects.
+		w.Criteria = &JumpItemAssociationCriteria{
+			SharedJumpGroups: []int{},
+			Host:             []string{},
+			Name:             []string{},
+			Tag:              []string{},
+			Comment:          []string{},
+		}
+	}
+
+	return json.Marshal(w)
 }
 
 func (a AccountJumpItemAssociation) Endpoint() string {
@@ -558,6 +684,17 @@ type AccountGroupJumpItemAssociation struct {
 	FilterType string                       `json:"filter_type" tfsdk:"filter_type"`
 	Criteria   *JumpItemAssociationCriteria `json:"criteria" tfsdk:"criteria"`
 	JumpItems  []InjectableJumpItem         `json:"jump_items" tfsdk:"jump_items"`
+}
+
+// MarshalJSON sends the same body the vault account association does; see
+// AccountJumpItemAssociation.MarshalJSON for the three criteria shapes and why
+// only two of them are ever sent. The account-group endpoint reads criteria the
+// same way (both go through AccountBaseRepo).
+//
+// The conversion is also the guard against the two structs drifting apart: it
+// stops compiling if their fields ever differ.
+func (a AccountGroupJumpItemAssociation) MarshalJSON() ([]byte, error) {
+	return json.Marshal(AccountJumpItemAssociation(a))
 }
 
 func (a AccountGroupJumpItemAssociation) Endpoint() string {
@@ -583,8 +720,37 @@ type GroupPolicyVaultAccountGroup struct {
 	Role           string  `tfsdk:"role" json:"role"`
 }
 
+// The group policy ID is interpolated into the request path. It is a
+// practitioner-supplied string, so it is escaped here rather than trusted: the
+// schema constrains it to digits (see the group_policy_id validators on the
+// resources that expose it), and PathEscape is a no-op for conforming input, but
+// the escape means a path segment stays a single path segment even if that
+// constraint is ever relaxed. http.NewRequest preserves the path verbatim — Go
+// resolves dot-segments only in ResolveReference, never in Parse.
+//
+// PathEscape is not sufficient on its own: it escapes separators but leaves a bare
+// "." or ".." unchanged, since neither needs escaping to be a legal segment. The
+// schema validator is what rejects those. Each layer covers what the other does
+// not, which is why both are here.
 func (a GroupPolicyVaultAccountGroup) Endpoint() string {
-	return fmt.Sprintf("group-policy/%s/vault-account-group", *a.GroupPolicyID)
+	return fmt.Sprintf("group-policy/%s/vault-account-group", url.PathEscape(*a.GroupPolicyID))
+}
+
+// EntityID is the member: the vault account group this row adds.
+func (a GroupPolicyVaultAccountGroup) EntityID() int { return intOrZero(a.AccountGroupID) }
+
+func (a GroupPolicyVaultAccountGroup) WithEntityID(id int) GroupPolicyVaultAccountGroup {
+	a.AccountGroupID = &id
+	return a
+}
+
+func (a GroupPolicyVaultAccountGroup) GroupPolicyIDValue() string {
+	return stringOrEmpty(a.GroupPolicyID)
+}
+
+func (a GroupPolicyVaultAccountGroup) WithGroupPolicyID(id string) GroupPolicyVaultAccountGroup {
+	a.GroupPolicyID = &id
+	return a
 }
 
 type GroupPolicyVaultAccount struct {
@@ -594,7 +760,22 @@ type GroupPolicyVaultAccount struct {
 }
 
 func (a GroupPolicyVaultAccount) Endpoint() string {
-	return fmt.Sprintf("group-policy/%s/vault-account", *a.GroupPolicyID)
+	return fmt.Sprintf("group-policy/%s/vault-account", url.PathEscape(*a.GroupPolicyID))
+}
+
+// EntityID is the member: the vault account this row adds.
+func (a GroupPolicyVaultAccount) EntityID() int { return intOrZero(a.AccountID) }
+
+func (a GroupPolicyVaultAccount) WithEntityID(id int) GroupPolicyVaultAccount {
+	a.AccountID = &id
+	return a
+}
+
+func (a GroupPolicyVaultAccount) GroupPolicyIDValue() string { return stringOrEmpty(a.GroupPolicyID) }
+
+func (a GroupPolicyVaultAccount) WithGroupPolicyID(id string) GroupPolicyVaultAccount {
+	a.GroupPolicyID = &id
+	return a
 }
 
 type GroupPolicyProvision struct {
@@ -602,7 +783,7 @@ type GroupPolicyProvision struct {
 }
 
 func (a GroupPolicyProvision) Endpoint() string {
-	return fmt.Sprintf("group-policy/%s/provision", *a.GroupPolicyID)
+	return fmt.Sprintf("group-policy/%s/provision", url.PathEscape(*a.GroupPolicyID))
 }
 
 type GroupPolicyJumpGroup struct {
@@ -613,7 +794,22 @@ type GroupPolicyJumpGroup struct {
 }
 
 func (a GroupPolicyJumpGroup) Endpoint() string {
-	return fmt.Sprintf("group-policy/%s/jump-group", *a.GroupPolicyID)
+	return fmt.Sprintf("group-policy/%s/jump-group", url.PathEscape(*a.GroupPolicyID))
+}
+
+// EntityID is the member: the jump group this row adds.
+func (a GroupPolicyJumpGroup) EntityID() int { return intOrZero(a.JumpGroupID) }
+
+func (a GroupPolicyJumpGroup) WithEntityID(id int) GroupPolicyJumpGroup {
+	a.JumpGroupID = &id
+	return a
+}
+
+func (a GroupPolicyJumpGroup) GroupPolicyIDValue() string { return stringOrEmpty(a.GroupPolicyID) }
+
+func (a GroupPolicyJumpGroup) WithGroupPolicyID(id string) GroupPolicyJumpGroup {
+	a.GroupPolicyID = &id
+	return a
 }
 
 type GroupPolicyJumpoint struct {
@@ -622,7 +818,36 @@ type GroupPolicyJumpoint struct {
 }
 
 func (a GroupPolicyJumpoint) Endpoint() string {
-	return fmt.Sprintf("group-policy/%s/jumpoint", *a.GroupPolicyID)
+	return fmt.Sprintf("group-policy/%s/jumpoint", url.PathEscape(*a.GroupPolicyID))
+}
+
+// EntityID is the member: the jumpoint this row adds.
+func (a GroupPolicyJumpoint) EntityID() int { return intOrZero(a.JumpointID) }
+
+func (a GroupPolicyJumpoint) WithEntityID(id int) GroupPolicyJumpoint {
+	a.JumpointID = &id
+	return a
+}
+
+func (a GroupPolicyJumpoint) GroupPolicyIDValue() string { return stringOrEmpty(a.GroupPolicyID) }
+
+func (a GroupPolicyJumpoint) WithGroupPolicyID(id string) GroupPolicyJumpoint {
+	a.GroupPolicyID = &id
+	return a
+}
+
+func intOrZero(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func stringOrEmpty(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 type MechList struct {

@@ -4,7 +4,6 @@ package rs
 
 import (
 	"context"
-	"reflect"
 	"strconv"
 	"terraform-provider-sra/api"
 	"terraform-provider-sra/bt/models"
@@ -122,6 +121,7 @@ func (r *vaultUsernamePasswordAccountResource) Schema(_ context.Context, _ resou
 						"group_policy_id": schema.StringAttribute{
 							Required:    true,
 							Description: "The ID of the Group Policy this Account is a member of",
+							Validators:  groupPolicyIDValidators(),
 						},
 						"role": schema.StringAttribute{
 							Required: true,
@@ -146,47 +146,11 @@ func (r *vaultUsernamePasswordAccountResource) ConfigValidators(context.Context)
 			path.MatchRoot("password_wo"),
 			path.MatchRoot("password_wo_version"),
 		),
-		resourcevalidator.PreferWriteOnlyAttribute(
-			path.MatchRoot("password"),
-			path.MatchRoot("password_wo"),
-		),
 	}
 }
 
 func (r *vaultUsernamePasswordAccountResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan models.VaultUsernamePasswordAccount
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	var config models.VaultUsernamePasswordAccount
-	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	password, ok := vaultAccountPassword(config, plan, true, &resp.Diagnostics)
-	if !ok {
-		return
-	}
-
-	var item api.VaultUsernamePasswordAccount
-	api.CopyTFtoAPI(ctx, reflect.ValueOf(&plan).Elem(), reflect.ValueOf(&item).Elem(), r.ApiClient.Product)
-	item.Password = password
-
-	created, err := api.CreateItem(r.ApiClient, item)
-	if err != nil {
-		resp.Diagnostics.AddError("Error creating item", "Unexpected error: "+err.Error())
-		return
-	}
-
-	if err := api.CopyAPItoTF(ctx, reflect.ValueOf(created).Elem(), reflect.ValueOf(&plan).Elem(), reflect.TypeOf(created).Elem(), r.ApiClient.Product); err != nil {
-		resp.Diagnostics.AddError("Error converting API response", "Unexpected error converting API response to Terraform state: "+err.Error())
-		return
-	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+	r.create(ctx, req, resp, passwordForCreate)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -204,12 +168,7 @@ func (r *vaultUsernamePasswordAccountResource) Create(ctx context.Context, req r
 		return
 	}
 
-	CreateGPMemberships[api.GroupPolicyVaultAccount](ctx, r.ApiClient, req.Plan, &resp.State, &resp.Diagnostics, id,
-		func(m *api.GroupPolicyVaultAccount, entityID int) { m.AccountID = &entityID },
-		func(m *api.GroupPolicyVaultAccount) *string { return m.GroupPolicyID },
-		func(m *api.GroupPolicyVaultAccount, id *string) { m.GroupPolicyID = id },
-		&accountMembershipMutex,
-	)
+	CreateGPMemberships[api.GroupPolicyVaultAccount](ctx, r.ApiClient, req.Plan, &resp.State, &resp.Diagnostics, id, &accountMembershipMutex)
 }
 
 func (r *vaultUsernamePasswordAccountResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -233,54 +192,17 @@ func (r *vaultUsernamePasswordAccountResource) Read(ctx context.Context, req res
 		return
 	}
 
-	ReadGPMemberships[api.GroupPolicyVaultAccount](ctx, r.ApiClient, req.State, &resp.State, &resp.Diagnostics, id,
-		func(m *api.GroupPolicyVaultAccount) *string { return m.GroupPolicyID },
-		func(m *api.GroupPolicyVaultAccount, id *string) { m.GroupPolicyID = id },
-	)
+	ReadGPMemberships[api.GroupPolicyVaultAccount](ctx, r.ApiClient, req.State, &resp.State, &resp.Diagnostics, id)
+}
+
+// ImportState also reads the object's group policy memberships, which Read
+// refreshes only once they are in state.
+func (r *vaultUsernamePasswordAccountResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	importWithGPMemberships(ctx, &r.apiResource, &accountMemberIndex, req, resp)
 }
 
 func (r *vaultUsernamePasswordAccountResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan models.VaultUsernamePasswordAccount
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	var state models.VaultUsernamePasswordAccount
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	var config models.VaultUsernamePasswordAccount
-	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	passwordVersionChanged := !plan.PasswordWOVersion.Equal(state.PasswordWOVersion)
-	password, ok := vaultAccountPassword(config, plan, passwordVersionChanged, &resp.Diagnostics)
-	if !ok {
-		return
-	}
-
-	var item api.VaultUsernamePasswordAccount
-	api.CopyTFtoAPI(ctx, reflect.ValueOf(&plan).Elem(), reflect.ValueOf(&item).Elem(), r.ApiClient.Product)
-	stripVaultUsernamePasswordAccountReadOnlyFields(&item)
-	item.Password = password
-
-	updated, err := api.UpdateItem(r.ApiClient, item)
-	if err != nil {
-		resp.Diagnostics.AddError("Error updating item", "Unexpected error: "+err.Error())
-		return
-	}
-
-	if err := api.CopyAPItoTF(ctx, reflect.ValueOf(updated).Elem(), reflect.ValueOf(&plan).Elem(), reflect.TypeOf(updated).Elem(), r.ApiClient.Product); err != nil {
-		resp.Diagnostics.AddError("Error converting API response", "Unexpected error converting API response to Terraform state: "+err.Error())
-		return
-	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+	r.update(ctx, req, resp, passwordForUpdate)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -299,18 +221,28 @@ func (r *vaultUsernamePasswordAccountResource) Update(ctx context.Context, req r
 	}
 
 	UpdateGPMemberships[api.GroupPolicyVaultAccount](ctx, r.ApiClient, req.Plan, req.State, &resp.State, &resp.Diagnostics, id,
-		func(m *api.GroupPolicyVaultAccount, entityID int) { m.AccountID = &entityID },
-		func(m *api.GroupPolicyVaultAccount) *string { return m.GroupPolicyID },
-		func(m *api.GroupPolicyVaultAccount, id *string) { m.GroupPolicyID = id },
 		api.DiffGPAccountLists,
 		&accountMembershipMutex,
 	)
 }
 
-func stripVaultUsernamePasswordAccountReadOnlyFields(item *api.VaultUsernamePasswordAccount) {
-	item.Personal = nil
-	item.OwnerUserID = nil
-	item.LastCheckoutTimestamp = nil
+// passwordForCreate sends password_wo on create. A write-only value is always
+// null in the plan, so it comes from the configuration.
+func passwordForCreate(config, plan models.VaultUsernamePasswordAccount, item *api.VaultUsernamePasswordAccount) diag.Diagnostics {
+	var diagnostics diag.Diagnostics
+	if password, ok := vaultAccountPassword(config, plan, true, &diagnostics); ok {
+		item.Password = password
+	}
+	return diagnostics
+}
+
+// passwordForUpdate sends password_wo only when password_wo_version changes.
+func passwordForUpdate(config, state, plan models.VaultUsernamePasswordAccount, item *api.VaultUsernamePasswordAccount) diag.Diagnostics {
+	var diagnostics diag.Diagnostics
+	if password, ok := vaultAccountPassword(config, plan, !plan.PasswordWOVersion.Equal(state.PasswordWOVersion), &diagnostics); ok {
+		item.Password = password
+	}
+	return diagnostics
 }
 
 func vaultAccountPassword(config, plan models.VaultUsernamePasswordAccount, useWriteOnly bool, diagnostics *diag.Diagnostics) (string, bool) {

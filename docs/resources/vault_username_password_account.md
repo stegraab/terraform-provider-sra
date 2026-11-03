@@ -18,14 +18,16 @@ For descriptions of individual fields, please see the Configuration API document
 ```terraform
 # Create and manage a new Username/Password account in Vault
 
-ephemeral "aws_ssm_parameter" "account_password" {
-  arn = "arn:aws:ssm:eu-north-1:123456789012:parameter/example/account-password"
+variable "account_password" {
+  type      = string
+  sensitive = true
+  ephemeral = true
 }
 
 resource "sra_vault_username_password_account" "new_account" {
   name                = "Test User/Pass Account"
   username            = "test"
-  password_wo         = ephemeral.aws_ssm_parameter.account_password.value
+  password_wo         = var.account_password
   password_wo_version = 1
 
   # Omit the following configuration to use account group settings
@@ -127,4 +129,11 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 
 # Item can be imported by specifying the ID
 terraform import sra_vault_username_password_account.example 123
+
+# Import also reads group_policy_memberships. A configuration that omits them
+# plans their removal, which revokes that group policy's access. Declare them,
+# generate the configuration with -generate-config-out (it includes them), or
+# add lifecycle { ignore_changes = [group_policy_memberships] }.
+#
+# password plans an update after import: the API never returns it.
 ```

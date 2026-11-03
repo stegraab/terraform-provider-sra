@@ -19,9 +19,10 @@ not to BeyondTrust Support.
 
 Stegra maintains this provider so required infrastructure capabilities can be
 released on a predictable schedule while useful changes continue to be offered
-upstream. The initial Stegra release adds managed Group Policy and Group Policy
-Member resources while preserving the upstream provider's resources and data
-sources.
+upstream. The current distribution uses upstream v1.5.0 for managed Group Policy,
+Group Policy Member, ephemeral Vault passwords, and Vault update handling.
+Stegra retains Security Provider lookup by name and computed Vault value
+plan stabilization.
 
 The upstream base and Stegra patch history are recorded in
 [UPSTREAM.md](UPSTREAM.md).
@@ -33,7 +34,7 @@ terraform {
   required_providers {
     sra = {
       source  = "stegraab/sra"
-      version = "= 1.3.0-stegra.1"
+      version = "= 1.5.0-stegra.1"
     }
   }
 }
@@ -42,7 +43,7 @@ provider "sra" {}
 ```
 
 Stegra releases follow the upstream version with a `-stegra.N` suffix, for
-example `1.3.0-stegra.1`. Use an exact version constraint because Terraform
+example `1.5.0-stegra.1`. Use an exact version constraint because Terraform
 does not select prerelease versions through ordinary range constraints.
 
 The provider reads API connection settings from these environment variables:

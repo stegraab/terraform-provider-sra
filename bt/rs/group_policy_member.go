@@ -1,5 +1,3 @@
-// Modified by Stegra AB for the Stegra-maintained distribution.
-// SPDX-License-Identifier: Apache-2.0
 package rs
 
 import (
@@ -36,11 +34,6 @@ var (
 	// serially. This also makes empty-body create ID discovery deterministic for
 	// provider operations in the same process.
 	groupPolicyMemberMutex sync.Mutex
-)
-
-const (
-	groupPolicyMemberPageSize     = 100
-	groupPolicyMemberMaximumPages = 10000
 )
 
 func newGroupPolicyMemberResource() resource.Resource {
@@ -136,25 +129,31 @@ func (r *groupPolicyMemberResource) Create(ctx context.Context, req resource.Cre
 	groupPolicyMemberMutex.Lock()
 	defer groupPolicyMemberMutex.Unlock()
 
-	before, err := matchingGroupPolicyMembers(r.ApiClient, member)
-	if err != nil {
-		resp.Diagnostics.AddError("Error Reading Existing Group Policy Members", "Could not inspect the Group Policy before adding its member: "+err.Error())
-		return
-	}
-
 	created, err := api.CreateItem(r.ApiClient, member)
 	if err != nil {
 		resp.Diagnostics.AddError("Error Adding Group Policy Member", "The appliance rejected the Group Policy membership: "+err.Error())
 		return
 	}
 
-	memberID := 0
+	// Retain an accepted creation even if ID discovery or provisioning fails.
+	// Refresh can recover the ID using the unique membership selector.
+	plan.ID = types.StringNull()
 	if created != nil && created.ID != nil {
-		memberID = *created.ID
-	} else {
-		memberID, err = discoverCreatedGroupPolicyMemberID(r.ApiClient, member, before)
+		plan.ID = types.StringValue(strconv.Itoa(*created.ID))
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if plan.ID.IsNull() {
+		memberID, err := discoverCreatedGroupPolicyMemberID(r.ApiClient, member)
 		if err != nil {
 			resp.Diagnostics.AddError("Error Discovering Group Policy Member ID", err.Error())
+			return
+		}
+		plan.ID = types.StringValue(strconv.Itoa(memberID))
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		if resp.Diagnostics.HasError() {
 			return
 		}
 	}
@@ -163,10 +162,6 @@ func (r *groupPolicyMemberResource) Create(ctx context.Context, req resource.Cre
 		resp.Diagnostics.AddError("Error Provisioning Group Policy Members", "The member was added, but the Group Policy could not be provisioned: "+err.Error())
 		return
 	}
-
-	plan.ID = types.StringValue(strconv.Itoa(memberID))
-	diags = resp.State.Set(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
 }
 
 func (r *groupPolicyMemberResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -180,6 +175,18 @@ func (r *groupPolicyMemberResource) Read(ctx context.Context, req resource.ReadR
 	groupPolicyID, ok := parseGroupPolicyMemberID(state.GroupPolicyID, "group_policy_id", &resp.Diagnostics)
 	if !ok {
 		return
+	}
+	if state.ID.IsNull() || state.ID.IsUnknown() {
+		id, err := discoverCreatedGroupPolicyMemberID(r.ApiClient, groupPolicyMemberFromTerraform(state, groupPolicyID))
+		if err != nil {
+			resp.Diagnostics.AddError("Error Recovering Group Policy Member ID", err.Error())
+			return
+		}
+		state.ID = types.StringValue(strconv.Itoa(id))
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	}
 	memberID, ok := parseGroupPolicyMemberID(state.ID, "id", &resp.Diagnostics)
 	if !ok {
@@ -234,7 +241,7 @@ func (r *groupPolicyMemberResource) Delete(ctx context.Context, req resource.Del
 	defer groupPolicyMemberMutex.Unlock()
 
 	endpoint := fmt.Sprintf("group-policy/%s/member/%s", groupPolicyID, memberID)
-	if err := api.DeleteItemEndpoint[api.GroupPolicyMember](r.ApiClient, endpoint); err != nil {
+	if err := api.DeleteItemEndpoint(r.ApiClient, endpoint); err != nil {
 		if api.IsNotFound(err) {
 			return
 		}
@@ -316,65 +323,35 @@ func matchingGroupPolicyMembers(client *api.APIClient, wanted api.GroupPolicyMem
 	return matches, nil
 }
 
+// listGroupPolicyMembers reads every page of a policy's members.
 func listGroupPolicyMembers(client *api.APIClient, endpoint string) ([]api.GroupPolicyMember, error) {
-	all := make([]api.GroupPolicyMember, 0)
-	seen := make(map[int]struct{})
-	for page := 1; page <= groupPolicyMemberMaximumPages; page++ {
-		items, err := api.ListItemsEndpoint[api.GroupPolicyMember](client, endpoint, map[string]string{
-			"per_page":     strconv.Itoa(groupPolicyMemberPageSize),
-			"current_page": strconv.Itoa(page),
-		})
-		if err != nil {
-			return nil, err
+	members, err := api.ListAllItemsEndpoint(client, endpoint, nil, func(m *api.GroupPolicyMember) string {
+		if m.ID == nil {
+			return ""
 		}
-
-		newItems := 0
-		for _, item := range items {
-			if item.ID == nil {
-				continue
-			}
-			if _, exists := seen[*item.ID]; exists {
-				continue
-			}
-			seen[*item.ID] = struct{}{}
-			all = append(all, item)
-			newItems++
-		}
-		if len(items) < groupPolicyMemberPageSize {
-			return all, nil
-		}
-		if newItems == 0 {
-			return nil, fmt.Errorf("pagination for %s repeated a full page without new member IDs", endpoint)
+		return strconv.Itoa(*m.ID)
+	})
+	if err != nil {
+		return nil, err
+	}
+	withID := members[:0]
+	for _, m := range members {
+		if m.ID != nil {
+			withID = append(withID, m)
 		}
 	}
-	return nil, fmt.Errorf("pagination for %s exceeded %d pages", endpoint, groupPolicyMemberMaximumPages)
+	return withID, nil
 }
 
-func discoverCreatedGroupPolicyMemberID(client *api.APIClient, wanted api.GroupPolicyMember, before []api.GroupPolicyMember) (int, error) {
-	existingIDs := make(map[int]struct{}, len(before))
-	for _, member := range before {
-		if member.ID != nil {
-			existingIDs[*member.ID] = struct{}{}
-		}
-	}
-
-	after, err := matchingGroupPolicyMembers(client, wanted)
+func discoverCreatedGroupPolicyMemberID(client *api.APIClient, wanted api.GroupPolicyMember) (int, error) {
+	matches, err := matchingGroupPolicyMembers(client, wanted)
 	if err != nil {
 		return 0, err
 	}
-	newIDs := make([]int, 0, 1)
-	for _, member := range after {
-		if member.ID == nil {
-			continue
-		}
-		if _, existed := existingIDs[*member.ID]; !existed {
-			newIDs = append(newIDs, *member.ID)
-		}
+	if len(matches) != 1 {
+		return 0, fmt.Errorf("the member list contained %d matching members; expected exactly one", len(matches))
 	}
-	if len(newIDs) != 1 {
-		return 0, fmt.Errorf("the create response contained no ID and the member list contained %d newly matching members; expected exactly one", len(newIDs))
-	}
-	return newIDs[0], nil
+	return *matches[0].ID, nil
 }
 
 func groupPolicyMembersMatch(actual, wanted api.GroupPolicyMember) bool {
@@ -411,12 +388,12 @@ func setGroupPolicyMemberSelectorFromAPI(state *models.GroupPolicyMember, member
 	state.DistinguishedName = types.StringNull()
 	state.GroupName = types.StringNull()
 
-	if member.UserID != nil {
-		state.UserID = types.Int64Value(int64(*member.UserID))
-		return true
-	}
 	if member.DistinguishedName != nil {
 		state.DistinguishedName = types.StringValue(*member.DistinguishedName)
+		return true
+	}
+	if member.UserID != nil {
+		state.UserID = types.Int64Value(int64(*member.UserID))
 		return true
 	}
 	if member.GroupName != nil {

@@ -54,9 +54,10 @@ The `upstream-main` branch mirrors BeyondTrust's main branch. Use
 `scripts/sync_upstream_main.sh` to update it, then prepare an update on a
 temporary `chore/sync-upstream-*` branch.
 
-Use `git range-diff` as described in [UPSTREAM.md](UPSTREAM.md) to demonstrate
-that the Stegra patch series, especially managed Group Policy support, remains
-intact. Never publish upstream release tags as Stegra releases.
+Compare the remaining Stegra diff against the upstream base as described in
+[UPSTREAM.md](UPSTREAM.md), including schema and state compatibility when
+replacing a patch. Keep user-visible changes under `Unreleased` in
+`CHANGELOG.md`. Never publish upstream release tags as Stegra releases.
 
 ## Licensing
 

@@ -1,22 +1,29 @@
 package test
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"terraform-provider-sra/api"
+
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/Jeffail/gabs"
+	"github.com/gruntwork-io/terratest/modules/logger"
 	"github.com/gruntwork-io/terratest/modules/terraform"
 	test_structure "github.com/gruntwork-io/terratest/modules/test-structure"
 )
 
 func TestAccountGroup(t *testing.T) {
-	// t.Parallel()
 
 	randomBits := setEnvAndGetRandom(t)
-	testFolder := test_structure.CopyTerraformFolderToTemp(t, "../", fmt.Sprintf("test-tf-files/%s/vault/account_group", productPath()))
+	testFolder := test_structure.CopyTerraformFolderToTemp(t, "../", fmt.Sprintf("test-tf-files/%s/vault/account_group", productPath(t)))
 
 	defer test_structure.RunTestStage(t, "teardown", func() {
 		terraformOptions := test_structure.LoadTerraformOptions(t, testFolder)
@@ -71,10 +78,9 @@ func TestAccountGroup(t *testing.T) {
 }
 
 func TestAccountPolicy(t *testing.T) {
-	// t.Parallel()
 
 	randomBits := setEnvAndGetRandom(t)
-	testFolder := test_structure.CopyTerraformFolderToTemp(t, "../", fmt.Sprintf("test-tf-files/%s/vault/account_policy", productPath()))
+	testFolder := test_structure.CopyTerraformFolderToTemp(t, "../", fmt.Sprintf("test-tf-files/%s/vault/account_policy", productPath(t)))
 
 	defer test_structure.RunTestStage(t, "teardown", func() {
 		terraformOptions := test_structure.LoadTerraformOptions(t, testFolder)
@@ -143,10 +149,9 @@ func TestAccountPolicy(t *testing.T) {
 }
 
 func TestVaultSSHKey(t *testing.T) {
-	// t.Parallel()
 
 	randomBits := setEnvAndGetRandom(t)
-	testFolder := test_structure.CopyTerraformFolderToTemp(t, "../", fmt.Sprintf("test-tf-files/%s/vault/ssh_account", productPath()))
+	testFolder := test_structure.CopyTerraformFolderToTemp(t, "../", fmt.Sprintf("test-tf-files/%s/vault/ssh_account", productPath(t)))
 
 	defer test_structure.RunTestStage(t, "teardown", func() {
 		terraformOptions := test_structure.LoadTerraformOptions(t, testFolder)
@@ -193,6 +198,22 @@ func TestVaultSSHKey(t *testing.T) {
 		data.testPublicKey = false
 		assertAccount(t, terraformOptions, "stand_alone_ca", data, false, false)
 
+		// The two filter_type values no fixture exercised before this one. Reaching
+		// this assertion at all is most of the point: an absent criteria block used
+		// to marshal as "criteria": null, the appliance answered
+		// 422 "This value must be an array.", and the setup apply above would have
+		// failed outright. Neither of these accounts could be created.
+		for _, tc := range []struct{ output, filterType string }{
+			{"stand_alone_any", "any_jump_items"},
+			{"stand_alone_none", "no_jump_items"},
+		} {
+			association := extractJson(t, terraformOptions, tc.output).Path("jump_item_association")
+			assert.Equal(t, tc.filterType, association.Path("filter_type").Data(),
+				"%s should round-trip its filter_type", tc.output)
+			assert.Nil(t, association.Path("criteria").Data(),
+				"%s declares no criteria block, so none should come back", tc.output)
+		}
+
 		list := terraform.OutputListOfObjects(t, terraformOptions, "list")
 		assert.Equal(t, 0, len(list))
 	})
@@ -219,13 +240,137 @@ func TestVaultSSHKey(t *testing.T) {
 		assert.Equal(t, base["id"], singleFilter["id"])
 		assert.Equal(t, testPublicKey, singleFilter["public_key"])
 	})
+
+	// Five of the seven accounts in this fixture carry no jump_item_association,
+	// so the suite already applied the case that broke -- it had no way to see
+	// it. terraform.Apply does not fail on a dirty plan, and the assertions above
+	// read outputs rather than plans, so an exit-code check is what it takes.
+	//
+	// Note where the fault lives: state on disk is fine, and the REFRESH is what
+	// introduces the bad value, so an assertion on an output would pass whatever
+	// the provider does. Against the previous provider this stage reports the
+	// five accounts under "Objects have changed outside of Terraform", each
+	// gaining a jump_item_association of filter_type "", and then replans the
+	// whole attribute as (known after apply) -- which the next apply cannot
+	// settle, because the refresh reintroduces it every time.
+	//
+	// Both applies above are load-bearing rather than incidental: the list
+	// datasource only resolves on the second, and a plan taken before that
+	// reports "Changes to Outputs" and exits 2 for reasons unrelated to anything
+	// asserted here.
+	test_structure.RunTestStage(t, "Accounts with no jump item association plan clean", func() {
+		terraformOptions := test_structure.LoadTerraformOptions(t, testFolder)
+
+		require.Equal(t, 0, terraform.PlanExitCode(t, terraformOptions),
+			"an association-less vault account left a perpetual diff")
+	})
+	// Then change an unrelated attribute and apply again. Every other apply in
+	// this suite reloads identical options, so it drives Update with a plan
+	// equal to state -- which never reaches the arm this exercises.
+	//
+	// jump_item_association is Optional + Computed with no default, so for the
+	// five accounts that omit the block the planned value is unknown as soon as
+	// anything else on the resource changes. UpdateAccountJIA has nothing to do
+	// with the appliance in that case, but it must still resolve the unknown
+	// before returning: an unknown left in applied state fails the apply with
+	// "provider returned invalid result object after apply", and it fails AFTER
+	// the account PATCH has already been sent.
+	//
+	// terraform.Apply failing is the assertion. name is Required with no
+	// RequiresReplace, so this updates in place rather than recreating.
+	test_structure.RunTestStage(t, "Changing an unrelated attribute applies cleanly", func() {
+		terraformOptions := withBaseTFOptions(t, &terraform.Options{
+			TerraformDir: testFolder,
+			Vars: map[string]interface{}{
+				"random_bits": randomBits,
+				"name":        "This is a Renamed Name",
+			},
+		})
+		test_structure.SaveTerraformOptions(t, testFolder, terraformOptions)
+
+		// This apply is the assertion: terraform.Apply fails the test on a
+		// provider error, and the failure mode above is exactly that.
+		terraform.Apply(t, terraformOptions)
+
+		// The second settles the list datasource output, which still carries the
+		// pre-rename name and would otherwise exit 2 on "Changes to Outputs" --
+		// the same prerequisite the stage above carries, for the same reason.
+		terraform.Apply(t, terraformOptions)
+
+		require.Equal(t, 0, terraform.PlanExitCode(t, terraformOptions),
+			"renaming left a perpetual diff")
+	})
+
+	// An association attached outside Terraform, to an account whose
+	// configuration declares no jump_item_association block, must be ANNOUNCED
+	// in the plan before it is removed.
+	//
+	// The association is what scopes where a stored credential may be injected,
+	// so removing one widens nothing but narrows the operator's visibility of a
+	// real access boundary. Terraform removing it is correct -- the configuration
+	// is the source of truth and it says there is no association -- but doing so
+	// without saying so is not.
+	//
+	// While the attribute was Optional + Computed, this plan rendered as
+	// "jump_item_association = (known after apply)" under "1 to change", and the
+	// association was gone after the apply with nothing having warned. The
+	// attribute is Optional-only now, so the plan renders the removal.
+	//
+	// Runs last: it mutates an account out of band and then converges it, so it
+	// must not run before the assertions above.
+	test_structure.RunTestStage(t, "An out-of-band association is announced before removal", func() {
+		terraformOptions := test_structure.LoadTerraformOptions(t, testFolder)
+
+		accountID, err := strconv.Atoi(terraform.OutputMap(t, terraformOptions, "stand_alone")["id"])
+		require.NoError(t, err, "could not read the stand_alone account id from outputs")
+
+		// Lower case deliberately: the appliance normalises tag case, so a mixed-case
+		// canary comes back lowered and a naive Contains would miss it.
+		const tag = "outofbandscope"
+		// Every slice here is an empty slice rather than nil, and that is not
+		// belt-and-braces. None of these fields carries omitempty, so a nil slice
+		// marshals to an explicit null and the appliance answers
+		// 422 "This value must be an array." -- separately for jump_items and for
+		// each unset criteria field. Omitting a key entirely is accepted; sending
+		// null is not. The same shape is why the provider could not create
+		// an association with a bare filter_type until this branch fixed it.
+		_, err = api.CreateItem(freshClient(t), api.AccountJumpItemAssociation{
+			ID:         &accountID,
+			FilterType: "criteria",
+			Criteria: &api.JumpItemAssociationCriteria{
+				Tag:              []string{tag},
+				SharedJumpGroups: []int{},
+				Host:             []string{},
+				Name:             []string{},
+				Comment:          []string{},
+			},
+			JumpItems: []api.InjectableJumpItem{},
+		})
+		require.NoError(t, err, "could not attach an association out of band")
+
+		// -no-color, because Terraform interleaves ANSI escapes between the "-"
+		// and the attribute name: the coloured output contains no literal
+		// "- jump_item_association" to match on.
+		terraformOptions.NoColor = true
+		planOutput := terraform.Plan(t, terraformOptions)
+
+		assert.Contains(t, planOutput, "- jump_item_association",
+			"the plan must show the association being REMOVED, not replaced by an unknown: %s", planOutput)
+		assert.Contains(t, planOutput, tag,
+			"the plan must name the scope it is about to drop, so an operator can see what is lost")
+
+		// And it really is removed, so the fixture converges rather than leaving
+		// residue for the teardown to trip over.
+		terraform.Apply(t, terraformOptions)
+		require.Equal(t, 0, terraform.PlanExitCode(t, terraformOptions),
+			"the account should be settled once the out-of-band association is gone")
+	})
 }
 
 func TestVaultUserPass(t *testing.T) {
-	// t.Parallel()
 
 	randomBits := setEnvAndGetRandom(t)
-	testFolder := test_structure.CopyTerraformFolderToTemp(t, "../", fmt.Sprintf("test-tf-files/%s/vault/user_pass_account", productPath()))
+	testFolder := test_structure.CopyTerraformFolderToTemp(t, "../", fmt.Sprintf("test-tf-files/%s/vault/user_pass_account", productPath(t)))
 
 	defer test_structure.RunTestStage(t, "teardown", func() {
 		terraformOptions := test_structure.LoadTerraformOptions(t, testFolder)
@@ -285,13 +430,54 @@ func TestVaultUserPass(t *testing.T) {
 			assert.Equal(t, item["id"], list[0]["id"])
 		}
 	})
+
+	test_structure.RunTestStage(t, "Test the write-only password", func() {
+		terraformOptions := test_structure.LoadTerraformOptions(t, testFolder)
+		const addr = "sra_vault_username_password_account.write_only"
+
+		writeOnly := terraform.OutputMap(t, terraformOptions, "write_only")
+		assert.Equal(t, "1", writeOnly["password_wo_version"])
+		assertSecretNotStored(t, testFolder, "write-only-password")
+		requireNoResourceChanges(t, terraformOptions, "a write-only password must not plan a change on refresh")
+
+		// Bumping the version is the only way to send a new password.
+		rotated := "rotated-" + randomBits
+		terraformOptions.Vars["write_only_password"] = rotated
+		terraformOptions.Vars["password_wo_version"] = 2
+		test_structure.SaveTerraformOptions(t, testFolder, terraformOptions)
+
+		quiet := *terraformOptions
+		quiet.Logger = logger.Discard
+		plan := planStruct(t, &quiet)
+		change, ok := plan.ResourceChangesMap[addr]
+		require.True(t, ok, "%s is missing from the plan", addr)
+		assert.True(t, change.Change.Actions.Update(), "a version bump must update %s in place, got %v", addr, change.Change.Actions)
+		rawPlan, err := json.Marshal(plan.RawPlan)
+		require.NoError(t, err)
+		assert.NotContains(t, string(rawPlan), rotated, "the plan must not hold the write-only password")
+
+		terraform.Apply(t, terraformOptions)
+		writeOnly = terraform.OutputMap(t, terraformOptions, "write_only")
+		assert.Equal(t, "2", writeOnly["password_wo_version"])
+		assertSecretNotStored(t, testFolder, rotated)
+		requireNoResourceChanges(t, terraformOptions, "the rotated write-only password must settle in one apply")
+	})
+}
+
+// assertSecretNotStored fails if secret appears anywhere in the fixture's local
+// state file. The file is read directly, not through terraform state pull, so
+// the state (which holds the fixture's other passwords) is never logged.
+func assertSecretNotStored(t *testing.T, dir, secret string) {
+	t.Helper()
+	state, err := os.ReadFile(filepath.Join(dir, "terraform.tfstate"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(state), secret, "the write-only password must not be stored in state")
 }
 
 func TestVaultToken(t *testing.T) {
-	// t.Parallel()
 
 	randomBits := setEnvAndGetRandom(t)
-	testFolder := test_structure.CopyTerraformFolderToTemp(t, "../", fmt.Sprintf("test-tf-files/%s/vault/token_account", productPath()))
+	testFolder := test_structure.CopyTerraformFolderToTemp(t, "../", fmt.Sprintf("test-tf-files/%s/vault/token_account", productPath(t)))
 
 	defer test_structure.RunTestStage(t, "teardown", func() {
 		terraformOptions := test_structure.LoadTerraformOptions(t, testFolder)
@@ -354,10 +540,9 @@ func TestVaultToken(t *testing.T) {
 }
 
 func TestVaultSecret(t *testing.T) {
-	// t.Parallel()
 
 	randomBits := setEnvAndGetRandom(t)
-	testFolder := test_structure.CopyTerraformFolderToTemp(t, "../", fmt.Sprintf("test-tf-files/%s/vault/secret", productPath()))
+	testFolder := test_structure.CopyTerraformFolderToTemp(t, "../", fmt.Sprintf("test-tf-files/%s/vault/secret", productPath(t)))
 
 	defer test_structure.RunTestStage(t, "teardown", func() {
 		terraformOptions := test_structure.LoadTerraformOptions(t, testFolder)
