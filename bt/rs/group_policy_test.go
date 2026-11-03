@@ -1,5 +1,3 @@
-// Modified by Stegra AB for the Stegra-maintained distribution.
-// SPDX-License-Identifier: Apache-2.0
 package rs
 
 import (
@@ -15,6 +13,7 @@ import (
 	"terraform-provider-sra/api"
 	"terraform-provider-sra/bt/models"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -30,7 +29,7 @@ func TestGroupPolicySchemaMatchesTerraformModel(t *testing.T) {
 	require.False(t, resp.Diagnostics.HasError())
 
 	expected := make(map[string]struct{})
-	modelType := reflect.TypeOf(models.GroupPolicy{})
+	modelType := reflect.TypeOf(models.GroupPolicyResource{})
 	for i := 0; i < modelType.NumField(); i++ {
 		expected[modelType.Field(i).Tag.Get("tfsdk")] = struct{}{}
 	}
@@ -57,7 +56,7 @@ func TestGroupPolicyResourceIsRegistered(t *testing.T) {
 }
 
 func TestConfiguredGroupPolicyFieldsForOtherProduct(t *testing.T) {
-	config := models.GroupPolicy{
+	config := models.GroupPolicyResource{
 		PermAccessAllowed:     types.BoolValue(true),
 		PermSupportAllowed:    types.StringValue("full_support"),
 		PermInviteExternalRep: types.BoolNull(),
@@ -76,19 +75,19 @@ func TestConfiguredGroupPolicyFieldsForOtherProduct(t *testing.T) {
 
 func TestPRAGroupPolicyAccessConflicts(t *testing.T) {
 	tests := map[string]struct {
-		plan           models.GroupPolicy
+		plan           models.GroupPolicyResource
 		enabled        []string
 		accessConflict bool
 		statusConflict bool
 	}{
 		"no enabled jump permissions": {
-			plan: models.GroupPolicy{
+			plan: models.GroupPolicyResource{
 				PermAccessAllowed: types.BoolValue(false),
 				PermShellJump:     types.BoolValue(false),
 			},
 		},
 		"disabled access": {
-			plan: models.GroupPolicy{
+			plan: models.GroupPolicyResource{
 				PermAccessAllowed: types.BoolValue(false),
 				AccessPermStatus:  types.StringValue("defined"),
 				PermShellJump:     types.BoolValue(true),
@@ -96,17 +95,16 @@ func TestPRAGroupPolicyAccessConflicts(t *testing.T) {
 			enabled:        []string{"perm_shell_jump"},
 			accessConflict: true,
 		},
-		"unknown access defaults to disabled on create": {
-			plan: models.GroupPolicy{
+		"unknown configured access defers validation": {
+			plan: models.GroupPolicyResource{
 				PermAccessAllowed: types.BoolUnknown(),
 				AccessPermStatus:  types.StringUnknown(),
 				PermRemoteRdp:     types.BoolValue(true),
 			},
-			enabled:        []string{"perm_remote_rdp"},
-			accessConflict: true,
+			enabled: []string{"perm_remote_rdp"},
 		},
 		"undefined access status": {
-			plan: models.GroupPolicy{
+			plan: models.GroupPolicyResource{
 				PermAccessAllowed: types.BoolValue(true),
 				AccessPermStatus:  types.StringValue("not_defined"),
 				PermWebJump:       types.BoolValue(true),
@@ -115,7 +113,7 @@ func TestPRAGroupPolicyAccessConflicts(t *testing.T) {
 			statusConflict: true,
 		},
 		"valid defined access": {
-			plan: models.GroupPolicy{
+			plan: models.GroupPolicyResource{
 				PermAccessAllowed:  types.BoolValue(true),
 				AccessPermStatus:   types.StringValue("final"),
 				PermJumpClient:     types.BoolValue(true),
@@ -137,7 +135,7 @@ func TestPRAGroupPolicyAccessConflicts(t *testing.T) {
 
 func TestGroupPolicyModifyPlanRejectsJumpPermissionWithoutPRAAccess(t *testing.T) {
 	ctx := context.Background()
-	managed := &groupPolicyResource{apiResource: apiResource[api.GroupPolicy, models.GroupPolicy]{
+	managed := &groupPolicyResource{apiResource: apiResource[api.GroupPolicy, models.GroupPolicyResource]{
 		ApiClient: &api.APIClient{Product: api.ProductPRA},
 	}}
 	sch := groupPolicyTestSchema(t, managed)
@@ -155,6 +153,89 @@ func TestGroupPolicyModifyPlanRejectsJumpPermissionWithoutPRAAccess(t *testing.T
 	require.True(t, resp.Diagnostics.HasError())
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "perm_access_allowed")
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "perm_shell_jump")
+}
+
+func TestGroupPolicyModifyPlanResetsAllOmittedProductDefaults(t *testing.T) {
+	for _, product := range []string{api.ProductPRA, api.ProductRS} {
+		t.Run(product, func(t *testing.T) {
+			ctx := context.Background()
+			managed := &groupPolicyResource{apiResource: apiResource[api.GroupPolicy, models.GroupPolicyResource]{ApiClient: &api.APIClient{Product: product}}}
+			sch := groupPolicyTestSchema(t, managed)
+			config := models.GroupPolicyResource{Name: types.StringValue("Minimal")}
+			planModel := config
+			fields := reflect.ValueOf(&planModel).Elem()
+			for i := 0; i < fields.NumField(); i++ {
+				if fields.Type().Field(i).Tag.Get("sraproduct") == "" {
+					continue
+				}
+				switch fields.Field(i).Interface().(type) {
+				case types.Bool:
+					fields.Field(i).Set(reflect.ValueOf(types.BoolValue(true)))
+				case types.Int64:
+					fields.Field(i).Set(reflect.ValueOf(types.Int64Value(99)))
+				case types.String:
+					fields.Field(i).Set(reflect.ValueOf(types.StringValue("defined")))
+				}
+			}
+			plan := groupPolicyTestPlan(t, sch, planModel)
+			configPlan := groupPolicyTestPlan(t, sch, config)
+			resp := resource.ModifyPlanResponse{Plan: plan}
+			managed.ModifyPlan(ctx, resource.ModifyPlanRequest{Config: tfsdk.Config{Schema: sch, Raw: configPlan.Raw}, Plan: plan}, &resp)
+			require.False(t, resp.Diagnostics.HasError(), "%v", resp.Diagnostics)
+			var actual models.GroupPolicyResource
+			require.False(t, resp.Plan.Get(ctx, &actual).HasError())
+			values := reflect.ValueOf(actual)
+			for i := 0; i < values.NumField(); i++ {
+				field := values.Type().Field(i)
+				fieldProduct := field.Tag.Get("sraproduct")
+				if fieldProduct == "" {
+					continue
+				}
+				value := values.Field(i).Interface().(attr.Value)
+				name := field.Tag.Get("tfsdk")
+				if !strings.EqualFold(fieldProduct, product) {
+					assert.True(t, value.IsNull(), name)
+				} else if fallback, ok := groupPolicyProductDefault(name, value); ok {
+					assert.True(t, value.Equal(fallback), name)
+				} else {
+					assert.Equal(t, "defined", value.(types.String).ValueString(), name)
+				}
+			}
+		})
+	}
+}
+
+func TestGroupPolicyModifyPlanIgnoresOutOfBandJumpForValidation(t *testing.T) {
+	ctx := context.Background()
+	managed := &groupPolicyResource{apiResource: apiResource[api.GroupPolicy, models.GroupPolicyResource]{ApiClient: &api.APIClient{Product: api.ProductPRA}}}
+	sch := groupPolicyTestSchema(t, managed)
+	config := models.GroupPolicyResource{Name: types.StringValue("Minimal"), PermCollaborate: types.BoolValue(true)}
+	model := config
+	model.PermWebJump = types.BoolValue(true)
+	model.AccessPermStatus = types.StringValue("not_defined")
+	plan := groupPolicyTestPlan(t, sch, model)
+	configPlan := groupPolicyTestPlan(t, sch, config)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+	managed.ModifyPlan(ctx, resource.ModifyPlanRequest{Config: tfsdk.Config{Schema: sch, Raw: configPlan.Raw}, Plan: plan}, &resp)
+	require.False(t, resp.Diagnostics.HasError(), "%v", resp.Diagnostics)
+	var actual models.GroupPolicyResource
+	require.False(t, resp.Plan.Get(ctx, &actual).HasError())
+	assert.False(t, actual.PermWebJump.ValueBool())
+}
+
+func TestGroupPolicyModifyPlanPreservesExplicitAndUnknownConfiguration(t *testing.T) {
+	ctx := context.Background()
+	managed := &groupPolicyResource{apiResource: apiResource[api.GroupPolicy, models.GroupPolicyResource]{ApiClient: &api.APIClient{Product: api.ProductPRA}}}
+	sch := groupPolicyTestSchema(t, managed)
+	config := models.GroupPolicyResource{Name: types.StringValue("Configured"), PermAccessAllowed: types.BoolValue(true), PermWebJump: types.BoolValue(true), PermInviteExternalUser: types.BoolUnknown()}
+	plan := groupPolicyTestPlan(t, sch, config)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+	managed.ModifyPlan(ctx, resource.ModifyPlanRequest{Config: tfsdk.Config{Schema: sch, Raw: plan.Raw}, Plan: plan}, &resp)
+	require.False(t, resp.Diagnostics.HasError(), "%v", resp.Diagnostics)
+	var actual models.GroupPolicyResource
+	require.False(t, resp.Plan.Get(ctx, &actual).HasError())
+	assert.True(t, actual.PermWebJump.ValueBool())
+	assert.True(t, actual.PermInviteExternalUser.IsUnknown())
 }
 
 func TestGroupPolicyResourceCRUDWithPRAFields(t *testing.T) {
@@ -215,7 +296,7 @@ func TestGroupPolicyResourceCRUDWithPRAFields(t *testing.T) {
 	managed.Create(ctx, resource.CreateRequest{Plan: createPlan}, &createResp)
 	require.False(t, createResp.Diagnostics.HasError(), "%v", createResp.Diagnostics)
 
-	var created models.GroupPolicy
+	var created models.GroupPolicyResource
 	require.False(t, createResp.State.Get(ctx, &created).HasError())
 	assert.Equal(t, "42", created.ID.ValueString())
 	assert.True(t, created.PermSdStaticPortForExternalTools.ValueBool())
@@ -232,7 +313,7 @@ func TestGroupPolicyResourceCRUDWithPRAFields(t *testing.T) {
 	managed.Update(ctx, resource.UpdateRequest{Plan: updatePlan, State: readResp.State}, &updateResp)
 	require.False(t, updateResp.Diagnostics.HasError(), "%v", updateResp.Diagnostics)
 
-	var updated models.GroupPolicy
+	var updated models.GroupPolicyResource
 	require.False(t, updateResp.State.Get(ctx, &updated).HasError())
 	assert.Equal(t, "Updated Group Policy", updated.Name.ValueString())
 	assert.False(t, updated.PermRemoteRdp.ValueBool())
@@ -265,7 +346,7 @@ func groupPolicyTestSchema(t *testing.T, managed *groupPolicyResource) schema.Sc
 	return resp.Schema
 }
 
-func groupPolicyTestPlan(t *testing.T, sch schema.Schema, model models.GroupPolicy) tfsdk.Plan {
+func groupPolicyTestPlan(t *testing.T, sch schema.Schema, model models.GroupPolicyResource) tfsdk.Plan {
 	t.Helper()
 	ctx := context.Background()
 	var object types.Object
@@ -276,8 +357,8 @@ func groupPolicyTestPlan(t *testing.T, sch schema.Schema, model models.GroupPoli
 	return tfsdk.Plan{Schema: sch, Raw: raw}
 }
 
-func praGroupPolicyTestModel(id types.String, name string) models.GroupPolicy {
-	return models.GroupPolicy{
+func praGroupPolicyTestModel(id types.String, name string) models.GroupPolicyResource {
+	return models.GroupPolicyResource{
 		ID:                                  id,
 		Name:                                types.StringValue(name),
 		PermShareOtherTeam:                  types.BoolValue(false),
@@ -313,10 +394,6 @@ func praGroupPolicyTestModel(id types.String, name string) models.GroupPolicy {
 		PermDisableAutoAssignment:           types.BoolNull(),
 		PermRoutingIdleTimeout:              types.Int64Null(),
 		AutoAssignmentMaxSessions:           types.Int64Null(),
-		PermSupportButtonPersonalDeploy:     types.BoolNull(),
-		PermSupportButtonTeamManage:         types.BoolNull(),
-		PermSupportButtonChangePublicSites:  types.BoolNull(),
-		PermSupportButtonTeamDeploy:         types.BoolNull(),
 		PermLocalVNC:                        types.BoolNull(),
 		PermLocalRDP:                        types.BoolNull(),
 		PermVpro:                            types.BoolNull(),
@@ -338,4 +415,48 @@ func TestGroupPolicyImportSetsNumericID(t *testing.T) {
 	var id types.String
 	require.False(t, resp.State.GetAttribute(context.Background(), path.Root("id"), &id).HasError())
 	assert.Equal(t, "9", id.ValueString())
+}
+
+// The RS spec lists four perm_support_button_* permissions that the
+// Configuration API neither accepts nor returns: a create that sends them gets
+// 400 "Unexpected input parameters". ModifyPlan fills every omitted RS boolean
+// with its default, so a minimal RS policy must still send none of them.
+func TestGroupPolicyRSCreateSendsNoSupportButtonPermissions(t *testing.T) {
+	ctx := context.Background()
+	var sent map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if req.URL.Path == "/oauth2/token" {
+			_, _ = w.Write([]byte(`{"token_type":"Bearer","expires_in":3600,"access_token":"test-token"}`))
+			return
+		}
+		require.Equal(t, http.MethodPost, req.Method)
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&sent))
+		sent["id"] = float64(42)
+		assert.NoError(t, json.NewEncoder(w).Encode(sent))
+	}))
+	t.Cleanup(server.Close)
+
+	clientID, clientSecret := "id", "secret"
+	client, err := api.NewClient(server.URL, &clientID, &clientSecret)
+	require.NoError(t, err)
+	client.Product = api.ProductRS
+	managed := &groupPolicyResource{}
+	managed.ApiClient = client
+	sch := groupPolicyTestSchema(t, managed)
+
+	config := groupPolicyTestPlan(t, sch, models.GroupPolicyResource{ID: types.StringUnknown(), Name: types.StringValue("Minimal")})
+	planned := resource.ModifyPlanResponse{Plan: config}
+	managed.ModifyPlan(ctx, resource.ModifyPlanRequest{Config: tfsdk.Config{Schema: sch, Raw: config.Raw}, Plan: config}, &planned)
+	require.False(t, planned.Diagnostics.HasError(), "%v", planned.Diagnostics)
+
+	resp := resource.CreateResponse{State: tfsdk.State{Schema: sch, Raw: planned.Plan.Raw}}
+	managed.Create(ctx, resource.CreateRequest{Plan: planned.Plan}, &resp)
+	require.False(t, resp.Diagnostics.HasError(), "%v", resp.Diagnostics)
+
+	require.NotNil(t, sent, "no create was sent")
+	assert.Equal(t, false, sent["perm_vpro"], "omitted RS permissions are sent as their default")
+	for key := range sent {
+		assert.False(t, strings.HasPrefix(key, "perm_support_button_"), "the create sent %s, which the API rejects", key)
+	}
 }

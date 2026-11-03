@@ -111,11 +111,14 @@ func (r *vaultSSHAccountResource) Schema(_ context.Context, _ resource.SchemaReq
 				Sensitive: true,
 			},
 			"private_key_public_cert": schema.StringAttribute{
+				// Optional, not Optional+Computed. The API never returns this field
+				// on a read, so Computed promised Terraform a value the provider
+				// cannot supply: with the attribute absent from configuration the
+				// planned value stayed unknown through apply, which Terraform
+				// rejects. Its two siblings that are equally write-only,
+				// private_key and private_key_passphrase, are Optional for the same
+				// reason.
 				Optional: true,
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
 			},
 			"last_checkout_timestamp": schema.StringAttribute{
 				Computed: true,
@@ -132,6 +135,7 @@ func (r *vaultSSHAccountResource) Schema(_ context.Context, _ resource.SchemaReq
 						"group_policy_id": schema.StringAttribute{
 							Required:    true,
 							Description: "The ID of the Group Policy this Account is a member of",
+							Validators:  groupPolicyIDValidators(),
 						},
 						"role": schema.StringAttribute{
 							Required: true,
@@ -165,12 +169,7 @@ func (r *vaultSSHAccountResource) Create(ctx context.Context, req resource.Creat
 		return
 	}
 
-	CreateGPMemberships[api.GroupPolicyVaultAccount](ctx, r.ApiClient, req.Plan, &resp.State, &resp.Diagnostics, id,
-		func(m *api.GroupPolicyVaultAccount, entityID int) { m.AccountID = &entityID },
-		func(m *api.GroupPolicyVaultAccount) *string { return m.GroupPolicyID },
-		func(m *api.GroupPolicyVaultAccount, id *string) { m.GroupPolicyID = id },
-		&accountMembershipMutex,
-	)
+	CreateGPMemberships[api.GroupPolicyVaultAccount](ctx, r.ApiClient, req.Plan, &resp.State, &resp.Diagnostics, id, &accountMembershipMutex)
 }
 
 func (r *vaultSSHAccountResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -194,10 +193,13 @@ func (r *vaultSSHAccountResource) Read(ctx context.Context, req resource.ReadReq
 		return
 	}
 
-	ReadGPMemberships[api.GroupPolicyVaultAccount](ctx, r.ApiClient, req.State, &resp.State, &resp.Diagnostics, id,
-		func(m *api.GroupPolicyVaultAccount) *string { return m.GroupPolicyID },
-		func(m *api.GroupPolicyVaultAccount, id *string) { m.GroupPolicyID = id },
-	)
+	ReadGPMemberships[api.GroupPolicyVaultAccount](ctx, r.ApiClient, req.State, &resp.State, &resp.Diagnostics, id)
+}
+
+// ImportState also reads the object's group policy memberships, which Read
+// refreshes only once they are in state.
+func (r *vaultSSHAccountResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	importWithGPMemberships(ctx, &r.apiResource, &accountMemberIndex, req, resp)
 }
 
 func (r *vaultSSHAccountResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -220,9 +222,6 @@ func (r *vaultSSHAccountResource) Update(ctx context.Context, req resource.Updat
 	}
 
 	UpdateGPMemberships[api.GroupPolicyVaultAccount](ctx, r.ApiClient, req.Plan, req.State, &resp.State, &resp.Diagnostics, id,
-		func(m *api.GroupPolicyVaultAccount, entityID int) { m.AccountID = &entityID },
-		func(m *api.GroupPolicyVaultAccount) *string { return m.GroupPolicyID },
-		func(m *api.GroupPolicyVaultAccount, id *string) { m.GroupPolicyID = id },
 		api.DiffGPAccountLists,
 		&accountMembershipMutex,
 	)

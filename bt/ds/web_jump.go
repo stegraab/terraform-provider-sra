@@ -52,58 +52,50 @@ For descriptions of individual fields, please see the Configuration API document
 							Optional: false,
 						},
 						"name": schema.StringAttribute{
-							Required: true,
-						},
-						"jumpoint_id": schema.Int64Attribute{
-							Required: true,
-						},
-						"url": schema.StringAttribute{
-							Required: true,
-						},
-						"username_format": schema.StringAttribute{
-							Optional: true,
 							Computed: true,
 						},
+						"jumpoint_id": schema.Int64Attribute{
+							Computed: true,
+						},
+						"url": schema.StringAttribute{
+							Computed: true,
+						},
+						"username_format": schema.StringAttribute{
+							Computed:    true,
+							Description: models.UsernameFormatDescription,
+						},
 						"verify_certificate": schema.BoolAttribute{
-							Optional: true,
 							Computed: true,
 						},
 						"jump_group_id": schema.Int64Attribute{
-							Required: true,
+							Computed: true,
 						},
 						"jump_group_type": schema.StringAttribute{
-							Optional: true,
 							Computed: true,
 						},
 						"authentication_timeout": schema.Int64Attribute{
-							Optional: true,
 							Computed: true,
 						},
 						"tag": schema.StringAttribute{
-							Optional: true,
 							Computed: true,
 						},
 						"comments": schema.StringAttribute{
-							Optional: true,
 							Computed: true,
 						},
 						"username_field": schema.StringAttribute{
-							Optional: true,
 							Computed: true,
 						},
 						"password_field": schema.StringAttribute{
-							Optional: true,
 							Computed: true,
 						},
 						"submit_field": schema.StringAttribute{
-							Optional: true,
 							Computed: true,
 						},
 						"jump_policy_id": schema.Int64Attribute{
-							Optional: true,
+							Computed: true,
 						},
 						"session_policy_id": schema.Int64Attribute{
-							Optional: true,
+							Computed: true,
 						},
 					},
 				},

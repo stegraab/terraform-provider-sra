@@ -9,6 +9,10 @@ description: |-
   	deleted and recreated in response to any changes to the Terraform configuration, which
   	will invalidate any existing copies of the installer.
   
+  	*NOTE*: `elevate_install`, `elevate_prompt`, and `valid_duration` are not refreshed
+  	from the API after creation. Running `terraform import` against an existing installer will therefore
+  	show a difference on these fields on the next plan, forcing the installer to be destroyed and recreated.
+  
   	For descriptions of individual fields, please see the Configuration API documentation on your SRA Appliance.
 ---
 
@@ -20,6 +24,10 @@ Manages a Jump Client Installer.
 		and any automated provisioning based on the Terraform configuration. Installers will be
 		deleted and recreated in response to any changes to the Terraform configuration, which
 		will invalidate any existing copies of the installer.
+
+		*NOTE*: `elevate_install`, `elevate_prompt`, and `valid_duration` are not refreshed
+		from the API after creation. Running `terraform import` against an existing installer will therefore
+		show a difference on these fields on the next plan, forcing the installer to be destroyed and recreated.
 
 		For descriptions of individual fields, please see the Configuration API documentation on your SRA Appliance.
 
@@ -40,9 +48,9 @@ data "sra_jump_group_list" "jg" {
 
 output "client" {
   value = {
-    "installer_id": sra_jump_client_installer.test_jc.installer_id,
-    "key_info": sra_jump_client_installer.test_jc.key_info,
-    "expires": sra_jump_client_installer.test_jc.expiration_timestamp
+    "installer_id" : sra_jump_client_installer.test_jc.installer_id,
+    "key_info" : sra_jump_client_installer.test_jc.key_info,
+    "expires" : sra_jump_client_installer.test_jc.expiration_timestamp
   }
 }
 ```

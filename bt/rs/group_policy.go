@@ -1,5 +1,3 @@
-// Modified by Stegra AB for the Stegra-maintained distribution.
-// SPDX-License-Identifier: Apache-2.0
 package rs
 
 import (
@@ -40,12 +38,12 @@ func newGroupPolicyResource() resource.Resource {
 }
 
 type groupPolicyResource struct {
-	apiResource[api.GroupPolicy, models.GroupPolicy]
+	apiResource[api.GroupPolicy, models.GroupPolicyResource]
 }
 
 func (r *groupPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages a Group Policy for either Privileged Remote Access (PRA) or Remote Support (RS). Product-specific attributes must only be configured for the matching appliance type.\n\nOn PRA, enabling a Jump permission requires effective endpoint access: `perm_access_allowed` must be `true`, and `access_perm_status` must not be `not_defined`. The appliance otherwise normalizes enabled Jump permissions back to `false`.",
+		MarkdownDescription: "Manages a Group Policy for either Privileged Remote Access (PRA) or Remote Support (RS). Product-specific attributes must only be configured for the matching appliance type.\n\nOmitted permissions reset to their API defaults rather than preserving grants from prior state. Boolean permissions default to `false`. On RS, `perm_support_allowed` defaults to `not_allowed`, `perm_routing_idle_timeout` to `900`, `auto_assignment_max_sessions` to `3`, and `perm_console_idle_timeout` to `-1`. Attributes belonging to the other product remain null. The conditional defaults for `access_perm_status` and `rep_perm_status` remain API-computed.\n\nOn PRA, enabling a Jump permission requires effective endpoint access: `perm_access_allowed` must be `true`, and `access_perm_status` must not be `not_defined`. The appliance otherwise normalizes enabled Jump permissions back to `false`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
@@ -132,14 +130,10 @@ func (r *groupPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest
 					int64validator.Between(1, 10),
 				},
 			},
-			"perm_support_button_personal_deploy":     optionalComputedGroupPolicyBool("Whether representatives may deploy and manage personal Support Buttons. This field only applies to RS."),
-			"perm_support_button_team_manage":         optionalComputedGroupPolicyBool("Whether representatives may manage team Support Buttons. This field only applies to RS."),
-			"perm_support_button_change_public_sites": optionalComputedGroupPolicyBool("Whether representatives may change the Public Portal for Support Buttons. This field only applies to RS."),
-			"perm_support_button_team_deploy":         optionalComputedGroupPolicyBool("Whether representatives may deploy team Support Buttons. This field only applies to RS."),
-			"perm_local_vnc":                          optionalComputedGroupPolicyBool("Whether representatives may use Local VNC. This field only applies to RS."),
-			"perm_local_rdp":                          optionalComputedGroupPolicyBool("Whether representatives may use Local RDP. This field only applies to RS."),
-			"perm_vpro":                               optionalComputedGroupPolicyBool("Whether representatives may use Intel vPro. This field only applies to RS."),
-			"perm_console_idle_timeout":               groupPolicyProductIdleTimeoutAttribute("The Representative Console inactivity timeout in seconds. This field only applies to RS."),
+			"perm_local_vnc":            optionalComputedGroupPolicyBool("Whether representatives may use Local VNC. This field only applies to RS."),
+			"perm_local_rdp":            optionalComputedGroupPolicyBool("Whether representatives may use Local RDP. This field only applies to RS."),
+			"perm_vpro":                 optionalComputedGroupPolicyBool("Whether representatives may use Intel vPro. This field only applies to RS."),
+			"perm_console_idle_timeout": groupPolicyProductIdleTimeoutAttribute("The Representative Console inactivity timeout in seconds. This field only applies to RS."),
 		},
 	}
 }
@@ -149,7 +143,7 @@ func (r *groupPolicyResource) ModifyPlan(ctx context.Context, req resource.Modif
 		return
 	}
 
-	var config models.GroupPolicy
+	var config models.GroupPolicyResource
 	diags := req.Config.Get(ctx, &config)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -168,18 +162,39 @@ func (r *groupPolicyResource) ModifyPlan(ctx context.Context, req resource.Modif
 		)
 	}
 
-	if !r.ApiClient.IsPRA() {
-		return
-	}
-
-	var plan models.GroupPolicy
-	diags = req.Plan.Get(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	configValue := reflect.ValueOf(config)
+	configType := configValue.Type()
+	for i := 0; i < configValue.NumField(); i++ {
+		field := configType.Field(i)
+		product := field.Tag.Get("sraproduct")
+		if product == "" {
+			continue
+		}
+		name := field.Tag.Get("tfsdk")
+		value := configValue.Field(i).Interface().(attr.Value)
+		if !strings.EqualFold(product, r.ApiClient.Product) {
+			switch value.(type) {
+			case types.Bool:
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(name), types.BoolNull())...)
+			case types.String:
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(name), types.StringNull())...)
+			case types.Int64:
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(name), types.Int64Null())...)
+			}
+		} else if value.IsNull() {
+			if fallback, ok := groupPolicyProductDefault(name, value); ok {
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(name), fallback)...)
+			}
+		}
+	}
+	if resp.Diagnostics.HasError() || !r.ApiClient.IsPRA() {
+		return
+	}
 
-	enabledPermissions, accessConflict, statusConflict := praGroupPolicyAccessConflicts(plan)
+	enabledPermissions, accessConflict, statusConflict := praGroupPolicyAccessConflicts(config)
 	if accessConflict {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("perm_access_allowed"),
@@ -214,7 +229,26 @@ type configuredGroupPolicyField struct {
 	product string
 }
 
-func configuredGroupPolicyFieldsForOtherProduct(config models.GroupPolicy, product string) []configuredGroupPolicyField {
+// Product-specific defaults must not populate attributes belonging to the other
+// product. Conditional API defaults remain computed.
+func groupPolicyProductDefault(name string, value attr.Value) (attr.Value, bool) {
+	if _, ok := value.(types.Bool); ok {
+		return types.BoolValue(false), true
+	}
+	switch name {
+	case "perm_support_allowed":
+		return types.StringValue("not_allowed"), true
+	case "perm_routing_idle_timeout":
+		return types.Int64Value(900), true
+	case "auto_assignment_max_sessions":
+		return types.Int64Value(3), true
+	case "perm_console_idle_timeout":
+		return types.Int64Value(-1), true
+	}
+	return nil, false
+}
+
+func configuredGroupPolicyFieldsForOtherProduct(config models.GroupPolicyResource, product string) []configuredGroupPolicyField {
 	configValue := reflect.ValueOf(config)
 	configType := reflect.TypeOf(config)
 	var fields []configuredGroupPolicyField
@@ -240,7 +274,7 @@ func configuredGroupPolicyFieldsForOtherProduct(config models.GroupPolicy, produ
 	return fields
 }
 
-func praGroupPolicyAccessConflicts(plan models.GroupPolicy) (enabledPermissions []string, accessConflict bool, statusConflict bool) {
+func praGroupPolicyAccessConflicts(plan models.GroupPolicyResource) (enabledPermissions []string, accessConflict bool, statusConflict bool) {
 	permissions := []struct {
 		name  string
 		value types.Bool
@@ -266,7 +300,7 @@ func praGroupPolicyAccessConflicts(plan models.GroupPolicy) (enabledPermissions 
 		return enabledPermissions, false, false
 	}
 
-	accessConflict = plan.PermAccessAllowed.IsNull() || plan.PermAccessAllowed.IsUnknown() || !plan.PermAccessAllowed.ValueBool()
+	accessConflict = !plan.PermAccessAllowed.IsUnknown() && (plan.PermAccessAllowed.IsNull() || !plan.PermAccessAllowed.ValueBool())
 	statusConflict = !plan.AccessPermStatus.IsNull() && !plan.AccessPermStatus.IsUnknown() && plan.AccessPermStatus.ValueString() == "not_defined"
 	return enabledPermissions, accessConflict, statusConflict
 }

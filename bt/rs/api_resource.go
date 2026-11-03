@@ -1,26 +1,24 @@
-// Modified by Stegra AB for the Stegra-maintained distribution.
-// SPDX-License-Identifier: Apache-2.0
 package rs
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"terraform-provider-sra/api"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setdefault"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
@@ -41,6 +39,8 @@ func ResourceList() []func() resource.Resource {
 		newJumpClientInstallerResource,
 		newPostgreSQLTunnelJumpResource,
 		newMySQLTunnelJumpResource,
+		newMongodbTunnelJumpResource,
+		newOracleTunnelJumpResource,
 		newNetworkTunnelJumpResource,
 
 		newVaultAccountGroupResource,
@@ -108,6 +108,14 @@ Additionally, for Terraform to be happy:
 */
 
 func (r *apiResource[TApi, TTf]) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	r.create(ctx, req, resp, nil)
+}
+
+// create is the body of the generic Create. adjust, when non-nil, runs after the
+// plan is copied into the request item and may change it using the
+// configuration, the only place a write-only value can be read; see
+// passwordForCreate.
+func (r *apiResource[TApi, TTf]) create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse, adjust func(config, plan TTf, item *TApi) diag.Diagnostics) {
 	var item TApi
 	if !api.IsProductAllowed(ctx, item, r.ApiClient.Product) {
 		resp.Diagnostics.AddError(
@@ -124,21 +132,46 @@ func (r *apiResource[TApi, TTf]) Create(ctx context.Context, req resource.Create
 		return
 	}
 
-	tflog.Debug(ctx, fmt.Sprintf("🤬 create plan [%v]", plan))
+	tflog.Debug(ctx, "🤬 create plan")
 
 	tfObj := reflect.ValueOf(&plan).Elem()
 	apiObj := reflect.ValueOf(&item).Elem()
 	api.CopyTFtoAPI(ctx, tfObj, apiObj, r.ApiClient.Product)
 
-	rb, _ := json.Marshal(item)
+	if adjust != nil {
+		var config TTf
+		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		resp.Diagnostics.Append(adjust(config, plan, &item)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
 	tflog.Debug(ctx, "🙀 executing item post", map[string]interface{}{
-		"data": string(rb),
+		"endpoint": item.Endpoint(),
 	})
 	newItem, err := api.CreateItem(r.ApiClient, item)
 	if err != nil {
+		// The request body is deliberately absent from this message. Diagnostics are
+		// surfaced to the operator and copied into bug reports regardless of TF_LOG,
+		// and for the vault account resources the body is a credential.
 		resp.Diagnostics.AddError(
 			"Error creating item",
-			fmt.Sprintf("Unexpected error: [%s][%s]", err.Error(), string(rb)),
+			fmt.Sprintf("Unexpected error: [%s]", err.Error()),
+		)
+		return
+	}
+	if newItem == nil {
+		// CreateItem returns (nil, nil) on a 204 No Content. No documented create
+		// endpoint does this today, but if one did, there would be no server-
+		// assigned fields (e.g. ID) to populate computed attributes from — fail
+		// loudly rather than writing a half-null state.
+		resp.Diagnostics.AddError(
+			"Error creating item",
+			fmt.Sprintf("%s create returned no content; computed attributes could not be populated", r.printableName()),
 		)
 		return
 	}
@@ -177,7 +210,7 @@ func (r *apiResource[TApi, TTf]) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 
-	tflog.Debug(ctx, fmt.Sprintf("🤬 read state [%v]", state))
+	tflog.Debug(ctx, "🤬 read state")
 	tfObj := reflect.ValueOf(&state).Elem()
 	tfId := tfObj.FieldByName("ID").Interface().(types.String)
 	id, err := strconv.Atoi(tfId.ValueString())
@@ -190,10 +223,7 @@ func (r *apiResource[TApi, TTf]) Read(ctx context.Context, req resource.ReadRequ
 	}
 	item, err := api.GetItem[TApi](r.ApiClient, &id)
 
-	rb, _ := json.Marshal(item)
-	tflog.Debug(ctx, "🙀 got item", map[string]interface{}{
-		"data": string(rb),
-	})
+	logItem(ctx, "🙀 got item", item)
 
 	if err != nil {
 		if api.IsNotFound(err) {
@@ -227,6 +257,14 @@ func (r *apiResource[TApi, TTf]) Read(ctx context.Context, req resource.ReadRequ
 }
 
 func (r *apiResource[TApi, TTf]) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	r.update(ctx, req, resp, nil)
+}
+
+// update is the body of the generic Update. adjust, when non-nil, runs after the
+// plan is copied into the request item and may change it using the
+// configuration (the only place a write-only value can be read) and the prior
+// state; see clearAuthDatabase and passwordForUpdate.
+func (r *apiResource[TApi, TTf]) update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse, adjust func(config, state, plan TTf, item *TApi) diag.Diagnostics) {
 	var item TApi
 	if !api.IsProductAllowed(ctx, item, r.ApiClient.Product) {
 		resp.Diagnostics.AddError(
@@ -242,16 +280,29 @@ func (r *apiResource[TApi, TTf]) Update(ctx context.Context, req resource.Update
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	tflog.Debug(ctx, fmt.Sprintf("🤬 update plan [%v]", plan))
+	tflog.Debug(ctx, "🤬 update plan")
 
 	tfObj := reflect.ValueOf(&plan).Elem()
 	apiObj := reflect.ValueOf(&item).Elem()
 	api.CopyTFtoAPI(ctx, tfObj, apiObj, r.ApiClient.Product)
+	if preparer, ok := any(&item).(api.UpdateRequestPreparer); ok {
+		preparer.PrepareUpdateRequest()
+	}
 
-	rb, _ := json.Marshal(item)
-	tflog.Debug(ctx, "🙀 executing item update", map[string]interface{}{
-		"data": string(rb),
-	})
+	if adjust != nil {
+		var config, state TTf
+		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		resp.Diagnostics.Append(adjust(config, state, plan, &item)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	logItem(ctx, "🙀 executing item update", item)
 	newItem, err := api.UpdateItem(r.ApiClient, item)
 	if err != nil {
 		tfId := tfObj.FieldByName("ID").Interface().(types.String)
@@ -298,7 +349,7 @@ func (r *apiResource[TApi, TTf]) Delete(ctx context.Context, req resource.Delete
 		tflog.Debug(ctx, "error getting state")
 		return
 	}
-	tflog.Debug(ctx, fmt.Sprintf("🤬 delete state [%v]", state))
+	tflog.Debug(ctx, "🤬 delete state")
 	tflog.Debug(ctx, "deleting")
 
 	tfObj := reflect.ValueOf(&state).Elem()
@@ -344,6 +395,147 @@ func (d *apiResource[TApi, TTf]) printableName() string {
 }
 
 // Jump Group type validator
+// groupPolicyIDPattern matches the form the configuration API documents for a
+// group policy ID. The spec types the path parameter as
+// `integer, format: int32, minimum: 1` (openapi/bt-pra-configuration.openapi.yaml,
+// the ObjectId parameter), and every example in this repo sources the value from
+// `data.sra_group_policy_list.gp.items[0].id`.
+//
+// The attribute is a string on the Terraform side, so nothing previously stopped a
+// configuration supplying something that is not an ID at all. That value is
+// interpolated into the request path by the Endpoint() methods in api/models.go.
+var groupPolicyIDPattern = regexp.MustCompile(`^[0-9]+$`)
+
+// groupPolicyIDValidators constrains group_policy_id to that documented form.
+//
+// Used by every resource exposing the attribute, so the six declarations cannot
+// drift apart. Pairs with url.PathEscape in the Endpoint() methods: this keeps
+// non-conforming values out, and the escape means a path segment stays one segment
+// regardless.
+func groupPolicyIDValidators() []validator.String {
+	return []validator.String{
+		stringvalidator.RegexMatches(
+			groupPolicyIDPattern,
+			"must be a numeric group policy ID, as returned by the sra_group_policy_list data source",
+		),
+	}
+}
+
+// jumpItemAssociationFilterValidator encodes a precondition the API states and
+// the schema did not: a filter_type of "criteria" needs something to filter on.
+//
+// Measured against a live appliance, a request with filter_type "criteria" and:
+//   - neither criteria nor jump_items -> 422 "`criteria` or `jump_items` are
+//     required if the `filter_type` is being changed to \"criteria\""
+//   - criteria present but all five properties empty, and no jump_items -> 422
+//     "You must either define some association criteria or choose a different
+//     association method."
+//
+// Both are configuration errors that used to surface only once the apply was
+// under way. Either criteria or jump_items satisfies the appliance, so either
+// satisfies this.
+//
+// Scope, stated precisely because an earlier version of this comment overclaimed:
+// this gate covers configuration validity and nothing else. It does NOT make the
+// omitempty on Criteria safe -- a configuration with jump_items and no criteria
+// block passes here and still sends a nil Criteria. What makes that safe is
+// AccountJumpItemAssociation.MarshalJSON, which decides omit-versus-empty from
+// the filter type rather than from nil-ness.
+type jumpItemAssociationFilterValidator struct{}
+
+func (v jumpItemAssociationFilterValidator) Description(context.Context) string {
+	return `criteria or jump_items must be set when filter_type is "criteria"`
+}
+
+func (v jumpItemAssociationFilterValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v jumpItemAssociationFilterValidator) ValidateObject(ctx context.Context, req validator.ObjectRequest, resp *validator.ObjectResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	attrs := req.ConfigValue.Attributes()
+	filterType, ok := attrs["filter_type"].(types.String)
+	if !ok || filterType.IsNull() || filterType.IsUnknown() || filterType.ValueString() != "criteria" {
+		// any_jump_items and no_jump_items ignore criteria entirely.
+		return
+	}
+
+	// An unknown criteria carries no attributes, and must not be judged on that.
+	criteria, _ := attrs["criteria"].(types.Object)
+	if criteria.IsUnknown() {
+		return
+	}
+
+	if criteria.IsNull() {
+		// No criteria block at all. jump_items may carry the scope instead -- the
+		// appliance accepts that, and both the plan and the applied state then say
+		// the criteria is null, so they agree.
+		if setHasElements(attrs["jump_items"]) {
+			return
+		}
+	} else {
+		// A criteria block that IS written must carry something. jump_items does not
+		// excuse an empty one: the five sub-attributes default to empty sets, so the
+		// plan holds an object, the wire carries that object, and the appliance reads
+		// an all-empty criteria as "clear it" and reports null back. State would then
+		// contradict the plan, and a refresh re-proposes the same object forever.
+		for _, value := range criteria.Attributes() {
+			if setHasElements(value) {
+				return
+			}
+		}
+	}
+
+	resp.Diagnostics.AddAttributeError(
+		req.Path,
+		"Missing Jump Item Association Criteria",
+		`filter_type is "criteria", so this association must say what to filter on: `+
+			"set at least one property of `criteria` (host, name, tag, comment or "+
+			"shared_jump_groups), or drop the `criteria` block entirely and list "+
+			"`jump_items`. An empty `criteria` block is not the same as no block: the "+
+			"appliance reads it as an instruction to clear the criteria, and reports "+
+			"back a null that contradicts the plan.\n\n"+
+			`To associate every Jump Item, or none, use filter_type "any_jump_items" `+
+			`or "no_jump_items" instead — those ignore criteria.`,
+	)
+}
+
+// setHasElements reports whether v is a set carrying at least one element. An
+// unknown set counts as carrying one: its contents are not decidable at plan
+// time, and a validator must not reject a configuration it cannot evaluate.
+//
+// Length rather than len(Elements()): Elements() materialises a defensive copy of
+// the whole slice, which this would measure and discard. The IsUnknown and IsNull
+// guards are what make the zero-value options safe.
+func setHasElements(v attr.Value) bool {
+	set, ok := v.(types.Set)
+	if !ok {
+		return false
+	}
+	if set.IsUnknown() {
+		return true
+	}
+	return !set.IsNull() && set.Length(basetypes.CollectionLengthOptions{}) > 0
+}
+
+// logItem records that an item was handled, without recording the item.
+//
+// The generic paths carry every resource type, and build their item from the
+// Terraform plan — so the struct holds whatever the configuration set, including
+// write-only attributes. Logging the type keeps the trace useful for following a
+// request through the provider; the values are not the provider's to write out.
+func logItem(ctx context.Context, msg string, item any) {
+	// Type only. Endpoint() is deliberately NOT called here: several
+	// implementations dereference an ID that is not yet populated at the point
+	// these logs fire (AccountGroupJumpItemAssociation.Endpoint does *a.ID), so
+	// calling it turns a log line into a nil-pointer panic. A logging helper must
+	// not be able to fail the operation it is describing.
+	tflog.Debug(ctx, msg, map[string]interface{}{"type": fmt.Sprintf("%T", item)})
+}
+
 func jumpGroupTypeValidator() []validator.String {
 	return []validator.String{
 		stringvalidator.OneOf([]string{"shared", "personal"}...),
@@ -352,11 +544,8 @@ func jumpGroupTypeValidator() []validator.String {
 
 func accountJumpItemAssociationSchema() schema.SingleNestedAttribute {
 	return schema.SingleNestedAttribute{
-		Optional: true,
-		Computed: true,
-		PlanModifiers: []planmodifier.Object{
-			objectplanmodifier.UseStateForUnknown(),
-		},
+		Optional:   true,
+		Validators: []validator.Object{jumpItemAssociationFilterValidator{}},
 		Attributes: map[string]schema.Attribute{
 			"filter_type": schema.StringAttribute{
 				Required: true,
